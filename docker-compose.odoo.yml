@@ -1,0 +1,131 @@
+# =============================================================================
+# docker-compose.odoo.yml — ODOO SERVICES
+# =============================================================================
+# กำหนด services ทั้งหมดของ Odoo stack:
+#   - odoo-db  : PostgreSQL สำหรับ Odoo โดยเฉพาะ
+#   - odoo     : Odoo 17 ERP (Fleet Management + Payroll)
+#   - nginx    : Reverse proxy รับ traffic port 80/443
+#
+# ใช้รวมกับ docker-compose.yml เสมอ:
+#   docker compose -f docker-compose.yml -f docker-compose.odoo.yml up -d
+# =============================================================================
+
+services:
+
+  # ─── Odoo Database (PostgreSQL) ──────────────────────────────────────────────
+  # PostgreSQL แยกจาก TimescaleDB ของ backend
+  # Odoo จัดการ database ของตัวเองผ่านหน้า /web/database/manager
+  odoo-db:
+    image: postgres:15
+    environment:
+      # Odoo ต้องการ database ชื่อ postgres เป็น default
+      POSTGRES_DB:       postgres
+      # username สำหรับ Odoo ต่อเข้า DB
+      POSTGRES_USER:     ${ODOO_DB_USER}
+      # password — ดึงจาก GitHub Secrets
+      POSTGRES_PASSWORD: ${ODOO_DB_PASSWORD}
+    volumes:
+      # เก็บข้อมูล Odoo ทั้งหมด (invoices, employees, payroll, fleet)
+      - odoo-db-data:/var/lib/postgresql/data
+      # เก็บ log ของ PostgreSQL
+      - odoo-db-log:/var/log/postgresql
+    networks:
+      # อยู่ใน odoo-net เท่านั้น backend เข้าถึงตรงไม่ได้ ต้องผ่าน Odoo API
+      - odoo-net
+    healthcheck:
+      # ตรวจว่า PostgreSQL รับ connection ได้แล้วหรือยัง
+      test: ["CMD-SHELL", "pg_isready -U odoo"]
+      interval: 10s
+      retries: 10
+      start_period: 30s
+
+  # ─── Odoo ERP ─────────────────────────────────────────────────────────────────
+  # Odoo 17 สำหรับ Fleet Management และ Payroll
+  # fleet-backend ดึงข้อมูลโบนัสพนักงานผ่าน Odoo API
+  odoo:
+    build: ./odoo
+    environment:
+      # hostname ของ database server (ใช้ชื่อ service แทน IP)
+      HOST:                odoo-db
+      # username ต่อ DB
+      USER:                ${ODOO_DB_USER}
+      # password ต่อ DB
+      PASSWORD:            ${ODOO_DB_PASSWORD}
+      # ชื่อ database ที่ Odoo จะสร้างและใช้งาน
+      ODOO_DB_NAME:        ${ODOO_DB_NAME}
+      # password สำหรับ Odoo master admin
+      # ใช้จัดการ database ผ่านหน้า /web/database/manager
+      ODOO_ADMIN_PASSWORD: ${ODOO_ADMIN_PASSWORD}
+    volumes:
+      # เก็บไฟล์แนบ รูปภาพ เอกสารทั้งหมดของ Odoo
+      - odoo-filestore:/var/lib/odoo
+      # เก็บ log ของ Odoo
+      - odoo-log:/var/log/odoo
+      # mount custom module fleet_telematics (read-write สำหรับ dev)
+      - ./odoo/custom_addons:/mnt/extra-addons
+    ports:
+      # เปิด port ให้เข้าถึง Odoo โดยตรง (จะถูกปิดใน production โดย nginx)
+      - "8069:8069"
+    networks:
+      - odoo-net
+    depends_on:
+      # รอให้ odoo-db healthy ก่อน start Odoo
+      # ถ้า DB ยังไม่พร้อม Odoo จะ crash ทันที
+      odoo-db:
+        condition: service_healthy
+    healthcheck:
+      # ตรวจว่า Odoo web server ตอบสนองแล้วหรือยัง
+      # Odoo ใช้เวลา boot นาน เลยรอ 60 วินาทีก่อนเริ่ม check
+      test: ["CMD", "curl", "-f", "http://localhost:8069/web/health"]
+      interval: 30s
+      retries: 3
+      start_period: 60s
+
+  # ─── Nginx Reverse Proxy ──────────────────────────────────────────────────────
+  # entry point เดียวของระบบ
+  # รับ HTTP/HTTPS ทุก request แล้วกระจายไปยัง backend และ odoo
+  # /          → odoo:8069
+  # /api/v1/   → fleet-backend:8000
+  nginx:
+    image: nginx:alpine
+    volumes:
+      # config ไฟล์ nginx (read-only ป้องกัน container แก้ไข)
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # SSL certificate สำหรับ HTTPS
+      - ./docker/nginx/certs:/etc/nginx/certs:ro
+      # Log ของ nginx (access.log, error.log)
+      - nginx-log:/var/log/nginx
+    ports:
+      - "80:80"    # HTTP
+      - "443:443"  # HTTPS
+    networks:
+      # เชื่อมต่อทั้ง 2 network เพื่อ forward ไปยัง backend และ odoo ได้
+      - backend-net
+      - odoo-net
+    depends_on:
+      - odoo
+    healthcheck:
+      # ตรวจว่า nginx config ถูกต้องและทำงานอยู่
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      retries: 3
+
+networks:
+  # ทั้งสอง network เป็น external เพราะสร้างไว้แล้วด้วย docker network create
+  odoo-net:
+    external: true
+  backend-net:
+    external: true
+
+volumes:
+  # ทุก volume เป็น external ป้องกันข้อมูลหายเมื่อลบ compose stack
+  odoo-db-data:
+    external: true
+  odoo-db-log:
+    external: true
+  odoo-filestore:
+    external: true
+  odoo-log:
+    external: true
+  nginx-log:
+    external: true

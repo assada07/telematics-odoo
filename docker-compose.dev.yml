@@ -1,0 +1,39 @@
+# =============================================================================
+# docker-compose.dev.yml — DEVELOPMENT OVERRIDE (Odoo)
+# =============================================================================
+# ใช้รวมกับ docker-compose.yml + docker-compose.odoo.yml:
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.odoo.yml \
+#     -f docker-compose.dev.yml up
+#
+# Override สำคัญ:
+#   - เพิ่ม -dev ต่อท้ายชื่อ container
+#   - เปิด port 8069 ให้เข้า Odoo โดยตรง
+#   - mount custom_addons แบบ read-write แก้ไขได้ทันที
+# =============================================================================
+
+services:
+
+  # ─── Odoo Database ───────────────────────────────────────────────────────────
+  odoo-db:
+    container_name: telematics-odoo-db-dev
+    restart: unless-stopped
+
+  # ─── Odoo ERP ─────────────────────────────────────────────────────────────────
+  odoo:
+    container_name: telematics-odoo-dev
+    restart: unless-stopped
+    volumes:
+      - odoo-filestore:/var/lib/odoo
+      - odoo-log:/var/log/odoo
+      # read-write ใน dev แก้ไข module ได้ทันทีโดยไม่ต้อง rebuild
+      - ./odoo/custom_addons:/mnt/extra-addons
+    ports:
+      # เปิด port ให้เข้า Odoo โดยตรงสำหรับ dev
+      - "8069:8069"
+
+  # ─── Nginx ───────────────────────────────────────────────────────────────────
+  nginx:
+    container_name: telematics-nginx-dev
+    restart: unless-stopped

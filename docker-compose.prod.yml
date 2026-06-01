@@ -1,0 +1,38 @@
+# =============================================================================
+# docker-compose.prod.yml — PRODUCTION OVERRIDE (Odoo)
+# =============================================================================
+# ใช้รวมกับ docker-compose.yml + docker-compose.odoo.yml:
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.odoo.yml \
+#     -f docker-compose.prod.yml up -d
+#
+# Override สำคัญ:
+#   - restart: always ทุกตัว
+#   - ปิด port 8069 ของ Odoo (เข้าผ่าน nginx เท่านั้น)
+#   - mount custom_addons แบบ read-only
+# =============================================================================
+
+services:
+
+  # ─── Odoo Database ───────────────────────────────────────────────────────────
+  odoo-db:
+    container_name: telematics-odoo-db
+    restart: always
+
+  # ─── Odoo ERP ─────────────────────────────────────────────────────────────────
+  odoo:
+    container_name: telematics-odoo
+    restart: always
+    volumes:
+      - odoo-filestore:/var/lib/odoo
+      - odoo-log:/var/log/odoo
+      # read-only ใน production ป้องกัน container แก้ไขไฟล์ module
+      - ./odoo/custom_addons:/mnt/extra-addons:ro
+    # ลบ port 8069 ออก — เข้าผ่าน nginx เท่านั้น
+    ports: !reset []
+
+  # ─── Nginx ───────────────────────────────────────────────────────────────────
+  nginx:
+    container_name: telematics-nginx
+    restart: always

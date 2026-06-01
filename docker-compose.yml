@@ -1,0 +1,37 @@
+# =============================================================================
+# docker-compose.yml — BASE FILE (ไฟล์หลัก)
+# =============================================================================
+# ใช้ร่วมกับไฟล์อื่นเสมอ เช่น:
+#   docker compose -f docker-compose.yml -f docker-compose.odoo.yml up -d
+#
+# ไฟล์นี้กำหนด:
+#   - Networks กลางที่ใช้ร่วมกับ telematics-backend repo
+#   - Volumes กลางสำหรับเก็บข้อมูล Odoo persistent
+# =============================================================================
+
+networks:
+
+  # Network สำหรับ Odoo stack (odoo-db, odoo, nginx)
+  odoo-net:
+    driver: bridge
+
+  # Network สำหรับเชื่อมต่อกับ backend stack (fleet-backend)
+  backend-net:
+    driver: bridge
+
+volumes:
+
+  # ข้อมูลของ PostgreSQL สำหรับ Odoo
+  odoo-db-data:
+
+  # Log ของ PostgreSQL
+  odoo-db-log:
+
+  # ไฟล์แนบ รูปภาพ เอกสารทั้งหมดของ Odoo
+  odoo-filestore:
+
+  # Log ของ Odoo
+  odoo-log:
+
+  # Log ของ nginx reverse proxy
+  nginx-log:
