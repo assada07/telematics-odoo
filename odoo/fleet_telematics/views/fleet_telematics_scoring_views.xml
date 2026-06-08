@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  views/fleet_telematics_scoring_views.xml
+  Views สำหรับ fleet.telematics.scoring.config
+  - List: แสดงรายการ config ทั้งหมด พร้อมสถานะ push ล่าสุด
+  - Form: แก้ไข config + ปุ่ม "📤 Confirm"
+-->
+<odoo>
+
+    <!-- ── List View ────────────────────────────────────────────────────── -->
+    <record id="view_fleet_telematics_scoring_list" model="ir.ui.view">
+        <field name="name">fleet.telematics.scoring.config.list</field>
+        <field name="model">fleet.telematics.scoring.config</field>
+        <field name="arch" type="xml">
+            <tree decoration-success="active == True">
+                <field name="name"/>
+                <field name="effective_date"/>
+                <field name="score_base"/>
+                <field name="tier_a_min_score"/>
+                <field name="tier_b_min_score"/>
+                <field name="tier_c_min_score"/>
+                <field name="last_push_at"/>      <!-- เวลา push ล่าสุด -->
+                <field name="last_push_status"/>   <!-- OK 200 หรือ ERROR... -->
+                <field name="active" widget="boolean_toggle"/>
+            </tree>
+        </field>
+    </record>
+
+    <!-- ── Form View ────────────────────────────────────────────────────── -->
+    <record id="view_fleet_telematics_scoring_form" model="ir.ui.view">
+        <field name="name">fleet.telematics.scoring.config.form</field>
+        <field name="model">fleet.telematics.scoring.config</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <!--
+                      ปุ่มหลัก: ส่ง config ทั้งหมดไปให้ MTD Backend
+                      เรียก: action_push_to_backend() ใน fleet_telematics_scoring.py
+                      MTD จะใช้ config นี้คำนวณ driver_score ใน trip ถัดไปทันที
+                    -->
+                    <button name="action_push_to_backend"
+                            string="📤 Confirm"
+                            type="object"
+                            class="btn-primary"
+                            confirm="ยืนยันส่ง Scoring Config นี้ไปให้ MTD ประมวลผลทันที?"/>
+                </header>
+                <sheet>
+                    <!-- Ribbon "Active" แสดงตรงมุมบนขวาเมื่อ active=True -->
+                    <widget name="web_ribbon" title="Active" bg_color="bg-success"
+                            invisible="not active"/>
+                    <group string="ข้อมูลทั่วไป">
+                        <group>
+                            <field name="name"/>
+                            <field name="effective_date"/>
+                            <field name="active"/>
+                        </group>
+                        <group>
+                            <field name="score_base"/>
+                            <field name="max_deduct_per_trip"/>
+                            <field name="last_push_at"     readonly="1"/>
+                            <field name="last_push_status" readonly="1"/>
+                        </group>
+                    </group>
+
+                    <notebook>
+                        <!-- Tab 1: ค่า threshold ที่ใช้ตรวจจับเหตุการณ์ -->
+                        <page string="Detection Thresholds" name="thresholds">
+                            <group>
+                                <group string="G-Force (ค่าแรง G ที่ถือว่าผิดปกติ)">
+                                    <field name="harsh_brake_g"/>
+                                    <field name="harsh_accel_g"/>
+                                    <field name="harsh_corner_g"/>
+                                </group>
+                                <group string="Other Thresholds">
+                                    <field name="speeding_kmh_over"/>
+                                    <field name="idle_min_threshold"/>
+                                </group>
+                            </group>
+                        </page>
+
+                        <!-- Tab 2: ค่าหักคะแนนต่อเหตุการณ์ -->
+                        <page string="Deduction Weights" name="weights">
+                            <group>
+                                <field name="harsh_brake_deduct"/>
+                                <field name="harsh_accel_deduct"/>
+                                <field name="harsh_corner_deduct"/>
+                                <field name="speeding_deduct"/>
+                                <field name="idling_deduct"/>
+                                <field name="bump_deduct"/>
+                            </group>
+                        </page>
+
+                        <!-- Tab 3: เกณฑ์ tier และ % โบนัส -->
+                        <page string="Incentive Tiers" name="tiers">
+                            <group>
+                                <group string="Tier A — Excellent">
+                                    <field name="tier_a_min_score"/>
+                                    <field name="tier_a_bonus_pct"/>
+                                </group>
+                                <group string="Tier B — Good">
+                                    <field name="tier_b_min_score"/>
+                                    <field name="tier_b_bonus_pct"/>
+                                </group>
+                            </group>
+                            <group>
+                                <group string="Tier C — Fair">
+                                    <field name="tier_c_min_score"/>
+                                    <field name="tier_c_bonus_pct"/>
+                                </group>
+                                <group string="Tier D — Needs Improvement">
+                                    <!-- D ไม่มี min score — คือทุกคนที่ต่ำกว่า C -->
+                                    <span class="text-muted fst-italic">
+                                        คะแนนต่ำกว่า Tier C — ไม่ได้รับโบนัส (0%)
+                                    </span>
+                                </group>
+                            </group>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <!-- ── Action ─────────────────────────────────────────────────────── -->
+    <record id="action_fleet_telematics_scoring_config" model="ir.actions.act_window">
+        <field name="name">Scoring Config</field>
+        <field name="res_model">fleet.telematics.scoring.config</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+</odoo>

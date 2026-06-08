@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  data/cron_sync.xml
+  ประกาศ Scheduled Actions (Cron Jobs) ทั้ง 3 ตัว
+  Odoo Scheduler จะรันทุก 1 นาที และตรวจว่า cron ตัวไหน "ถึงเวลา" แล้วเรียก method นั้น
+
+  ข้อสำคัญ: user_id ต้องเป็น base.user_root (OdooBot)
+  ถ้าไม่ตั้ง cron จะ fail แบบเงียบ ไม่มี error ใน log
+-->
+<odoo>
+
+    <!--
+      CRON 1: ทุก 5 นาที — Sync Trip จาก MTD API
+      เรียก: fleet.telematics.log._cron_sync_trips()
+      ดึง trip ที่ประมวลผล score แล้ว บันทึกลง Odoo และ mark-synced กลับ
+    -->
+    <record id="ir_cron_fleet_sync_5min" model="ir.cron">
+        <field name="name">Fleet Telematics: Sync Trips (5 min)</field>
+        <field name="model_id" ref="model_fleet_telematics_log"/>
+        <field name="state">code</field>
+        <field name="code">model._cron_sync_trips()</field>
+        <field name="interval_number">5</field>
+        <field name="interval_type">minutes</field>
+        <field name="numbercall">-1</field>   <!-- -1 = รันตลอดไป ไม่หยุด -->
+        <field name="active">True</field>
+        <field name="user_id" ref="base.user_root"/>
+    </record>
+
+    <!--
+      CRON 2: ทุกวัน — Daily Summary
+      เรียก: fleet.telematics.log._cron_daily_summary()
+      คำนวณ avg_driver_score ของแต่ละรถจาก trip เมื่อวาน
+    -->
+    <record id="ir_cron_fleet_daily_summary" model="ir.cron">
+        <field name="name">Fleet Telematics: Daily Summary</field>
+        <field name="model_id" ref="model_fleet_telematics_log"/>
+        <field name="state">code</field>
+        <field name="code">model._cron_daily_summary()</field>
+        <field name="interval_number">1</field>
+        <field name="interval_type">days</field>
+        <field name="numbercall">-1</field>
+        <field name="active">True</field>
+        <field name="user_id" ref="base.user_root"/>
+    </record>
+
+    <!--
+      CRON 3: ทุกเดือน (วันที่ 1) — Monthly Incentive
+      เรียก: fleet.telematics.incentive._cron_calculate_monthly_incentive()
+      สร้าง incentive record draft สำหรับทุก driver ที่มี trip เดือนที่แล้ว
+    -->
+    <record id="ir_cron_fleet_monthly_incentive" model="ir.cron">
+        <field name="name">Fleet Telematics: Monthly Incentive</field>
+        <field name="model_id" ref="model_fleet_telematics_incentive"/>
+        <field name="state">code</field>
+        <field name="code">model._cron_calculate_monthly_incentive()</field>
+        <field name="interval_number">1</field>
+        <field name="interval_type">months</field>
+        <field name="numbercall">-1</field>
+        <field name="active">True</field>
+        <field name="user_id" ref="base.user_root"/>
+    </record>
+
+</odoo>

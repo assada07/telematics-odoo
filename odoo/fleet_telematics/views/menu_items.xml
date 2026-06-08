@@ -1,0 +1,213 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  views/menu_items.xml
+  Fleet Telematics — เมนูครบ 9 หมวดตามโครงสร้าง
+  โหลดหลัง views ทุกไฟล์
+-->
+<odoo>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!--  Root App                                                       -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <menuitem id="menu_fleet_telematics_root"
+              name="Fleet Telematics"
+              sequence="80"
+              web_icon="fleet_telematics,static/description/icon.png"/>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!--  1. Dashboard                                                   -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <menuitem id="menu_fleet_dashboard"
+              name="Dashboard"
+              parent="menu_fleet_telematics_root"
+              sequence="10"/>
+
+    <!-- 1.1 KPI Summary / Driver Scorecard -->
+    <menuitem id="menu_fleet_dashboard_kpi"
+              name="KPI &amp; Driver Scorecard"
+              parent="menu_fleet_dashboard"
+              action="action_fleet_telematics_dashboard"
+              sequence="10"/>
+
+    <!-- 1.2 Energy / Fuel Summary -->
+    <menuitem id="menu_fleet_dashboard_fuel"
+              name="Energy / Fuel Summary"
+              parent="menu_fleet_dashboard"
+              action="action_fleet_fuel_summary"
+              sequence="20"/>
+
+    <!-- 1.3 Incentive Summary -->
+    <menuitem id="menu_fleet_dashboard_incentive_sum"
+              name="Incentive Summary"
+              parent="menu_fleet_dashboard"
+              action="action_fleet_incentive_summary_dash"
+              sequence="30"/>
+
+    <!-- 1.4 Fleet Live Map -->
+    <menuitem id="menu_fleet_dashboard_livemap"
+              name="Fleet Live Map"
+              parent="menu_fleet_dashboard"
+              action="action_fleet_live_map"
+              sequence="40"/>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!--  2. Trip Logs                                                   -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <menuitem id="menu_fleet_trip_logs"
+              name="Trip Logs"
+              parent="menu_fleet_telematics_root"
+              sequence="20"/>
+
+    <!-- 2.1 Trip List -->
+    <menuitem id="menu_fleet_trip_list"
+              name="Trip List"
+              parent="menu_fleet_trip_logs"
+              action="action_fleet_telematics_log"
+              sequence="10"/>
+
+    <!-- 2.2 Analytics (Trip Detail / Graph) -->
+    <menuitem id="menu_fleet_trip_analytics"
+              name="Trip Analytics"
+              parent="menu_fleet_trip_logs"
+              action="action_fleet_telematics_analytics"
+              sequence="20"/>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!--  3. Events                                                      -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <menuitem id="menu_fleet_events"
+              name="Events"
+              parent="menu_fleet_telematics_root"
+              action="action_fleet_telematics_event"
+              sequence="30"/>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!--  4. Scoring Config                                              -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <menuitem id="menu_fleet_scoring_config"
+              name="Scoring Config"
+              parent="menu_fleet_telematics_root"
+              action="action_fleet_telematics_scoring_config"
+              sequence="40"/>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!--  5. Incentive / Bonus                                           -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <menuitem id="menu_fleet_incentive"
+              name="Incentive / Bonus"
+              parent="menu_fleet_telematics_root"
+              action="action_fleet_telematics_incentive"
+              sequence="50"/>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!--  6. Reports                                                     -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <menuitem id="menu_fleet_reports"
+              name="Reports"
+              parent="menu_fleet_telematics_root"
+              sequence="60"/>
+
+    <menuitem id="menu_fleet_report_driver_score"
+              name="Driver Score Report"
+              parent="menu_fleet_reports"
+              action="action_report_driver_score_view"
+              sequence="10"/>
+
+    <menuitem id="menu_fleet_report_fuel"
+              name="Fuel Efficiency Report"
+              parent="menu_fleet_reports"
+              action="action_report_fuel_efficiency"
+              sequence="20"/>
+
+    <menuitem id="menu_fleet_report_maintenance"
+              name="Maintenance Cost Trend"
+              parent="menu_fleet_reports"
+              action="action_report_maintenance_cost"
+              sequence="30"/>
+
+    <menuitem id="menu_fleet_report_fleet_summary"
+              name="Fleet Summary"
+              parent="menu_fleet_reports"
+              action="action_report_fleet_summary"
+              sequence="40"/>
+
+    <menuitem id="menu_fleet_report_incentive_sum"
+              name="Incentive Summary"
+              parent="menu_fleet_reports"
+              action="action_report_incentive_summary"
+              sequence="50"/>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!--  7. Fleet Live Map (top-level shortcut)                         -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <menuitem id="menu_fleet_live_map_top"
+              name="Fleet Live Map"
+              parent="menu_fleet_telematics_root"
+              action="action_fleet_live_map"
+              sequence="70"/>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!--  8. Employee Portal                                             -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <menuitem id="menu_fleet_employee_portal"
+              name="Employee Portal"
+              parent="menu_fleet_telematics_root"
+              sequence="80"/>
+
+    <menuitem id="menu_fleet_my_score"
+              name="My Driver Score"
+              parent="menu_fleet_employee_portal"
+              action="action_my_score"
+              sequence="10"/>
+
+    <menuitem id="menu_fleet_my_trips"
+              name="My Trips"
+              parent="menu_fleet_employee_portal"
+              action="action_my_trips"
+              sequence="20"/>
+
+    <menuitem id="menu_fleet_my_events"
+              name="My Events"
+              parent="menu_fleet_employee_portal"
+              action="action_my_events"
+              sequence="30"/>
+
+    <menuitem id="menu_fleet_my_incentive"
+              name="My Incentive"
+              parent="menu_fleet_employee_portal"
+              action="action_my_incentive"
+              sequence="40"/>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!--  9. Maintenance                                                 -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <menuitem id="menu_fleet_maintenance"
+              name="Maintenance"
+              parent="menu_fleet_telematics_root"
+              sequence="90"/>
+
+    <menuitem id="menu_fleet_maintenance_history"
+              name="Maintenance History"
+              parent="menu_fleet_maintenance"
+              action="action_fleet_maintenance"
+              sequence="10"/>
+
+    <menuitem id="menu_fleet_maintenance_alert"
+              name="Maintenance Alerts"
+              parent="menu_fleet_maintenance"
+              action="action_fleet_maintenance_alert"
+              sequence="20"/>
+
+    <menuitem id="menu_fleet_maintenance_cost_trend"
+              name="Cost Trend"
+              parent="menu_fleet_maintenance"
+              action="action_fleet_maintenance_cost_trend"
+              sequence="30"/>
+
+    <!-- Settings -->
+    <menuitem id="menu_fleet_telematics_settings"
+              name="Settings"
+              parent="menu_fleet_telematics_root"
+              action="action_fleet_telematics_config"
+              sequence="95"/>
+</odoo>

@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  views/fleet_telematics_portal_views.xml
+  Employee Portal — My Driver Score, My Trips, My Events, My Incentive
+  ใช้ domain filter โดย context uid เพื่อแสดงเฉพาะข้อมูลของพนักงานคนนั้น
+-->
+<odoo>
+
+    <!-- ── My Trips ──────────────────────────────────────────────────── -->
+    <record id="action_my_trips" model="ir.actions.act_window">
+        <field name="name">My Trips</field>
+        <field name="res_model">fleet.telematics.log</field>
+        <field name="view_mode">list,form,graph</field>
+        <field name="domain">[('driver_id.user_id','=',uid)]</field>
+        <field name="context">{'search_default_synced': 1}</field>
+        <field name="search_view_id" ref="fleet_telematics.view_fleet_telematics_log_search"/>
+    </record>
+
+    <!-- ── My Events ─────────────────────────────────────────────────── -->
+    <record id="action_my_events" model="ir.actions.act_window">
+        <field name="name">My Events</field>
+        <field name="res_model">fleet.telematics.event</field>
+        <field name="view_mode">list,form</field>
+        <field name="domain">[('trip_id.driver_id.user_id','=',uid)]</field>
+        <field name="search_view_id" ref="fleet_telematics.view_fleet_telematics_event_search"/>
+    </record>
+
+    <!-- ── My Driver Score (graph) ───────────────────────────────────── -->
+    <record id="view_my_score_graph" model="ir.ui.view">
+        <field name="name">fleet.telematics.log.graph.my_score</field>
+        <field name="model">fleet.telematics.log</field>
+        <field name="arch" type="xml">
+            <graph string="My Driver Score Trend" type="line" sample="1">
+                <field name="trip_start"   type="row" interval="day"/>
+                <field name="driver_score" type="measure"/>
+            </graph>
+        </field>
+    </record>
+
+    <record id="action_my_score" model="ir.actions.act_window">
+        <field name="name">My Driver Score</field>
+        <field name="res_model">fleet.telematics.log</field>
+        <field name="view_mode">graph,pivot,list</field>
+        <field name="domain">[('driver_id.user_id','=',uid)]</field>
+        <field name="context">{'search_default_synced': 1}</field>
+    </record>
+
+    <!-- ── My Incentive ──────────────────────────────────────────────── -->
+    <record id="action_my_incentive" model="ir.actions.act_window">
+        <field name="name">My Incentive</field>
+        <field name="res_model">fleet.telematics.incentive</field>
+        <field name="view_mode">list,form</field>
+        <field name="domain">[('driver_id.user_id','=',uid)]</field>
+    </record>
+
+</odoo>
