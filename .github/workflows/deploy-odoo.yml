@@ -1,0 +1,39 @@
+name: Deploy Odoo
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create Docker networks and volumes
+        run: |
+          docker network create odoo-net || true
+          docker network create backend-net || true
+          docker volume create odoo-db-data || true
+          docker volume create odoo-db-log || true
+          docker volume create odoo-filestore || true
+          docker volume create odoo-log || true
+          docker volume create nginx-log || true
+
+      - name: Create .env
+        run: |
+          cat > .env << EOF
+          ODOO_DB_USER=${{ secrets.ODOO_DB_USER }}
+          ODOO_DB_PASSWORD=${{ secrets.ODOO_DB_PASSWORD }}
+          ODOO_DB_NAME=${{ secrets.ODOO_DB_NAME }}
+          ODOO_ADMIN_PASSWORD=${{ secrets.ODOO_ADMIN_PASSWORD }}
+          LANG=C.UTF-8
+          EOF
+
+      - name: Deploy Odoo
+        run: |
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.odoo.yml \
+            up -d --build
