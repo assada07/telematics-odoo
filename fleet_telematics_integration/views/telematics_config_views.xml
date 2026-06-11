@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  views/telematics_config_views.xml
+  หน้ากากฟอร์ม Settings และ Status Dashboard
+  ปุ่ม: [ 💾 Push Config ] และ [ ⚡ Test Connection ]
+-->
+<odoo>
+
+    <!-- ── Form View ──────────────────────────────────────────────────── -->
+    <record id="view_telematics_config_form" model="ir.ui.view">
+        <field name="name">fleet.telematics.config.form</field>
+        <field name="model">fleet.telematics.config</field>
+        <field name="arch" type="xml">
+            <form string="Fleet Telematics Settings">
+                <header>
+                    <button name="action_save"
+                            string="💾 Save Settings"
+                            type="object"
+                            class="btn-primary"/>
+                    <button name="action_test_connection"
+                            string="⚡ Test Connection"
+                            type="object"
+                            class="btn-secondary"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <h1>Fleet Telematics</h1>
+                        <h3>Settings &amp; System Health</h3>
+                    </div>
+
+                    <!-- System Health Dashboard (ย้ายขึ้นบนสุด) -->
+                    <group string="🔌 System Health Dashboard">
+                        <group>
+                            <field name="connection_status" widget="badge"
+                                   decoration-success="connection_status == 'ready'"
+                                   decoration-danger="connection_status == 'error'"
+                                   decoration-muted="connection_status == 'untested'"/>
+                            <field name="last_test_at" readonly="1"/>
+                            <field name="last_sync_at" readonly="1"/>
+                        </group>
+                        <group>
+                            <field name="last_error" readonly="1" invisible="not last_error"
+                                   widget="text"/>
+                        </group>
+                    </group>
+
+                    <!-- Connection Settings -->
+                    <group string="⚙️ API Connection">
+                        <field name="name" invisible="1"/>
+                        <field name="api_url"
+                               placeholder="https://mtd.example.com"
+                               string="API URL"/>
+                        <field name="api_key"
+                               password="True"
+                               placeholder="sk-••••••••"
+                               string="API Key"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <!-- ── List View ──────────────────────────────────────────────────── -->
+    <record id="view_telematics_config_list" model="ir.ui.view">
+        <field name="name">fleet.telematics.config.list</field>
+        <field name="model">fleet.telematics.config</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="name"/>
+                <field name="api_url"/>
+                <field name="connection_status" widget="badge"
+                       decoration-success="connection_status == 'ready'"
+                       decoration-danger="connection_status == 'error'"
+                       decoration-muted="connection_status == 'untested'"/>
+                <field name="last_test_at"/>
+                <field name="last_sync_at"/>
+            </list>
+        </field>
+    </record>
+
+    <!-- ── Action ─────────────────────────────────────────────────────── -->
+    <record id="action_telematics_config" model="ir.actions.act_window">
+        <field name="name">Fleet Telematics Settings</field>
+        <field name="res_model">fleet.telematics.config</field>
+        <field name="view_mode">list,form</field>
+        <field name="target">current</field>
+    </record>
+
+</odoo>

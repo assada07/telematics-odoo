@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  views/fleet_vehicle_ext_views.xml
+  โค้ด XML เจาะแทรกแท็บ Telematics เข้าหน้าจอรถดั้งเดิม (fleet.vehicle)
+  ปุ่มคำสั่ง API ด้านบน:
+    [ ⬆️ Sync to Backend ] — POST /api/v1/config/vehicle
+    [ ☀️ เช็คสถานะรถ ]    — GET  /api/v1/vehicles/{id}/location
+-->
+<odoo>
+
+    <!-- เพิ่มปุ่มและแท็บ Telematics เข้าใน fleet.vehicle form -->
+    <record id="view_fleet_vehicle_form_telematics_ext" model="ir.ui.view">
+        <field name="name">fleet.vehicle.form.telematics.ext</field>
+        <field name="model">fleet.vehicle</field>
+        <field name="inherit_id" ref="fleet.fleet_vehicle_view_form"/>
+        <field name="arch" type="xml">
+
+            <!-- เพิ่มปุ่มใน header -->
+            <xpath expr="//header" position="inside">
+                <button name="action_sync_to_backend"
+                        string="⬆️ Sync to Backend"
+                        type="object"
+                        class="btn-primary"
+                        invisible="not telematics_device_id"
+                        confirm="ยืนยันผูกรถ + คนขับ + กล่อง GPS ไปยัง MTD Backend?"/>
+                <button name="action_check_vehicle_status"
+                        string="☀️ เช็คสถานะรถ"
+                        type="object"
+                        class="btn-secondary"
+                        invisible="not telematics_device_id"/>
+            </xpath>
+
+            <!-- เพิ่มแท็บ Telematics Settings -->
+            <notebook position="inside">
+                <page string="📡 Telematics Settings" name="telematics">
+                    <group>
+                        <group string="อุปกรณ์ GPS">
+                            <field name="telematics_device_id"
+                                   placeholder="เช่น KTC-001"/>
+                            <field name="online_status" widget="badge"
+                                   decoration-success="online_status == 'online'"
+                                   decoration-danger="online_status == 'offline'"
+                                   decoration-muted="online_status == 'unknown'"/>
+                            <field name="last_seen"/>
+                            <field name="ignition" widget="boolean_toggle"/>
+                            <field name="current_speed"/>
+                        </group>
+                        <group string="สรุปสถิติ">
+                            <field name="total_trips"/>
+                            <field name="total_distance_km"/>
+                            <field name="avg_driver_score"/>
+                            <field name="last_lat" readonly="1"/>
+                            <field name="last_lon" readonly="1"/>
+                        </group>
+                    </group>
+
+                    <!-- ประวัติ Trip ของรถคันนี้ -->
+                    <field name="telematics_log_ids">
+                        <list default_order="trip_start desc">
+                            <field name="trip_start"/>
+                            <field name="driver_id"/>
+                            <field name="distance_km"/>
+                            <field name="duration_min"/>
+                            <field name="driver_score"/>
+                            <field name="harsh_brake_count"/>
+                            <field name="state" widget="badge"/>
+                        </list>
+                    </field>
+                </page>
+            </notebook>
+
+        </field>
+    </record>
+
+</odoo>
