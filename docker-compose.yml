@@ -9,29 +9,58 @@
 #   - Volumes กลางสำหรับเก็บข้อมูล Odoo persistent
 # =============================================================================
 
+services:
+  odoo:
+    image: odoo:17
+    container_name: odoo
+    restart: always
+    depends_on:
+      - db
+    volumes:
+      - odoo-filestore:/var/lib/odoo
+      - ./odoo/custom_addons:/mnt/extra-addons
+    networks:
+      - odoo-net
+
+  db:
+    image: postgres:15
+    container_name: odoo-db
+    environment:
+      POSTGRES_USER: odoo
+      POSTGRES_PASSWORD: odoo
+    volumes:
+      - odoo-db-data:/var/lib/postgresql/data
+    networks:
+      - odoo-net
+
+  nginx:
+    image: nginx:alpine
+    container_name: nginx
+    restart: always
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+    depends_on:
+      - odoo
+    networks:
+      - odoo-net
+      - backend-net    # ← เชื่อมต่อ backend ได้
+
 networks:
-
-  # Network สำหรับ Odoo stack (odoo-db, odoo, nginx)
   odoo-net:
-    driver: bridge
-
-  # Network สำหรับเชื่อมต่อกับ backend stack (fleet-backend)
+    external: true
   backend-net:
-    driver: bridge
+    external: true
 
 volumes:
-
-  # ข้อมูลของ PostgreSQL สำหรับ Odoo
   odoo-db-data:
-
-  # Log ของ PostgreSQL
+    external: true
   odoo-db-log:
-
-  # ไฟล์แนบ รูปภาพ เอกสารทั้งหมดของ Odoo
+    external: true
   odoo-filestore:
-
-  # Log ของ Odoo
+    external: true
   odoo-log:
-
-  # Log ของ nginx reverse proxy
+    external: true
   nginx-log:
+    external: true
