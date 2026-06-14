@@ -21,12 +21,12 @@ jobs:
       - name: Create .env
         run: |
           cat > .env << EOF
-          ODOO_DB_USER=${{ secrets.ODOO_DB_USER }}
-          ODOO_DB_PASSWORD=${{ secrets.ODOO_DB_PASSWORD }}
-          ODOO_DB_NAME=${{ secrets.ODOO_DB_NAME }}
-          ODOO_ADMIN_PASSWORD=${{ secrets.ODOO_ADMIN_PASSWORD }}
-          LANG=C.UTF-8
-          EOF
+ODOO_DB_USER=${{ secrets.ODOO_DB_USER }}
+ODOO_DB_PASSWORD=${{ secrets.ODOO_DB_PASSWORD }}
+ODOO_DB_NAME=${{ secrets.ODOO_DB_NAME }}
+ODOO_ADMIN_PASSWORD=${{ secrets.ODOO_ADMIN_PASSWORD }}
+LANG=C.UTF-8
+EOF
 
       - name: Deploy Odoo
         run: |
