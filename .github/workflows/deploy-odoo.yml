@@ -1,15 +1,15 @@
 name: Deploy Odoo
-
 on:
   push:
     branches: [main]
-
 jobs:
   deploy:
     runs-on: self-hosted
-
     steps:
       - uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
       - name: Create Docker networks and volumes
         run: |
