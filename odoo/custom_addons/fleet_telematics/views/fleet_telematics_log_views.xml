@@ -1,0 +1,203 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- ── Search View ────────────────────────────────────────────────── -->
+    <record id="view_fleet_telematics_log_search" model="ir.ui.view">
+        <field name="name">fleet.telematics.log.search</field>
+        <field name="model">fleet.telematics.log</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="vehicle_id"/>
+                <field name="driver_id"/>
+                <field name="external_trip_id"/>
+                <!-- Sync Status filters -->
+                <filter name="draft"     string="Draft"     domain="[('state','=','draft')]"/>
+                <filter name="synced"    string="Synced"    domain="[('state','=','synced')]"/>
+                <filter name="confirmed" string="Confirmed" domain="[('state','=','confirmed')]"/>
+                <separator/>
+                <filter name="low_score"  string="คะแนนต่ำ (&lt;70)"
+                        domain="[('driver_score','&lt;',70),('driver_score','&gt;',0)]"/>
+                <filter name="this_month" string="เดือนนี้"
+                        domain="[('trip_start','&gt;=',(context_today()+relativedelta(day=1)).strftime('%Y-%m-%d'))]"/>
+                <filter name="today" string="วันนี้"
+                        domain="[('trip_start','&gt;=',context_today().strftime('%Y-%m-%d'))]"/>
+                <group expand="1" string="Group By">
+                    <filter name="group_driver"  string="Driver"  context="{'group_by':'driver_id'}"/>
+                    <filter name="group_vehicle" string="Vehicle" context="{'group_by':'vehicle_id'}"/>
+                    <filter name="group_month"   string="Month"   context="{'group_by':'trip_start:month'}"/>
+                    <filter name="group_state"   string="Sync Status" context="{'group_by':'state'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <!-- ── Trip List View ─────────────────────────────────────────────── -->
+    <record id="view_fleet_telematics_log_tree" model="ir.ui.view">
+        <field name="name">fleet.telematics.log.tree</field>
+        <field name="model">fleet.telematics.log</field>
+        <field name="arch" type="xml">
+            <tree default_order="trip_start desc" sample="1"
+                  decoration-success="state=='synced'"
+                  decoration-info="state=='confirmed'"
+                  decoration-muted="state=='draft'"
+                  decoration-danger="driver_score &lt; 70 and driver_score &gt; 0">
+                <!-- Trip ID / External ID -->
+                <field name="external_trip_id" string="Trip ID" optional="show"/>
+                <field name="trip_start"/>
+                <field name="vehicle_id" string="Vehicle"/>
+                <field name="driver_id"  string="Driver"/>
+                <field name="distance_km"/>
+                <field name="duration_min"/>
+                <field name="avg_speed"         optional="hide"/>
+                <field name="max_speed"         optional="hide"/>
+                <field name="idle_min"          optional="show"/>
+                <field name="fuel_used_est"     optional="show" string="Fuel (L)"/>
+                <field name="harsh_brake_count" optional="show"/>
+                <field name="harsh_accel_count" optional="hide"/>
+                <field name="harsh_corner_count" optional="hide"/>
+                <field name="speeding_count"    optional="show"/>
+                <field name="driver_score"      string="Driver Score"/>
+                <field name="state"             widget="badge"/>
+            </tree>
+        </field>
+    </record>
+
+    <!-- ── Trip Form View ─────────────────────────────────────────────── -->
+    <record id="view_fleet_telematics_log_form" model="ir.ui.view">
+        <field name="name">fleet.telematics.log.form</field>
+        <field name="model">fleet.telematics.log</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_confirm" string="Confirm" type="object"
+                            class="btn-primary" invisible="state != 'draft'"/>
+                    <field name="state" widget="statusbar"
+                           statusbar_visible="draft,confirmed,synced"/>
+                </header>
+                <sheet>
+                    <group>
+                        <group string="Trip Information">
+                            <field name="external_trip_id" readonly="1" string="Trip ID"/>
+                            <field name="vehicle_id"/>
+                            <field name="driver_id"/>
+                            <field name="trip_start"/>
+                            <field name="trip_end"/>
+                            <field name="duration_min" readonly="1"/>
+                        </group>
+                        <group string="สถิติการเดินทาง">
+                            <field name="distance_km"/>
+                            <field name="avg_speed"  string="Average Speed (km/h)"/>
+                            <field name="max_speed"/>
+                            <field name="idle_min"   string="Idle Time (min)"/>
+                            <field name="fuel_used_est" string="Fuel Used (L)"/>
+                        </group>
+                    </group>
+                    <group string="Driver Score &amp; Events">
+                        <group>
+                            <field name="driver_score"/>
+                            <field name="harsh_brake_count"  string="Harsh Brake"/>
+                            <field name="harsh_accel_count"  string="Harsh Acceleration"/>
+                        </group>
+                        <group>
+                            <field name="harsh_corner_count" string="Harsh Corner"/>
+                            <field name="speeding_count"     string="Speeding"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <!-- Tab: Event List -->
+                        <page string="Event List" name="events">
+                            <field name="event_ids">
+                                <tree>
+                                    <field name="occurred_at"    string="เวลาเกิด"/>
+                                    <field name="event_type"     widget="badge"/>
+                                    <field name="severity"/>
+                                    <field name="speed_at_event" string="Speed (km/h)"/>
+                                    <field name="lat"            optional="show"/>
+                                    <field name="lon"            optional="show"/>
+                                    <field name="description"/>
+                                </tree>
+                            </field>
+                        </page>
+                        <!-- Tab: GPS Track -->
+                        <page string="GPS Track" name="gps">
+                            <field name="gps_track_json" widget="text"
+                                   placeholder='[{"lat": 18.7883, "lon": 98.9853, "ts": "..."}]'/>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <!-- ── Graph: Score trend ─────────────────────────────────────────── -->
+    <record id="view_fleet_log_graph_score_trend" model="ir.ui.view">
+        <field name="name">fleet.telematics.log.graph.score_trend</field>
+        <field name="model">fleet.telematics.log</field>
+        <field name="arch" type="xml">
+            <graph string="Score Trend" type="line" sample="1">
+                <field name="trip_start"   type="row" interval="day"/>
+                <field name="driver_score" type="measure"/>
+            </graph>
+        </field>
+    </record>
+
+    <!-- ── Graph: Harsh events by driver ─────────────────────────────── -->
+    <record id="view_fleet_log_graph_harsh" model="ir.ui.view">
+        <field name="name">fleet.telematics.log.graph.harsh</field>
+        <field name="model">fleet.telematics.log</field>
+        <field name="arch" type="xml">
+            <graph string="Harsh Events by Driver" type="bar" sample="1">
+                <field name="driver_id"        type="row"/>
+                <field name="harsh_brake_count" type="measure"/>
+                <field name="harsh_accel_count" type="measure"/>
+                <field name="harsh_corner_count" type="measure"/>
+                <field name="speeding_count"    type="measure"/>
+            </graph>
+        </field>
+    </record>
+
+    <!-- ── Pivot: Full analytics ──────────────────────────────────────── -->
+    <record id="view_fleet_telematics_log_pivot" model="ir.ui.view">
+        <field name="name">fleet.telematics.log.pivot</field>
+        <field name="model">fleet.telematics.log</field>
+        <field name="arch" type="xml">
+            <pivot string="Trip Analytics" sample="1">
+                <field name="driver_id"         type="row"/>
+                <field name="trip_start"        type="col" interval="month"/>
+                <field name="driver_score"       type="measure"/>
+                <field name="distance_km"        type="measure"/>
+                <field name="harsh_brake_count"  type="measure"/>
+                <field name="harsh_accel_count"  type="measure"/>
+                <field name="harsh_corner_count" type="measure"/>
+                <field name="speeding_count"     type="measure"/>
+                <field name="fuel_used_est"      type="measure"/>
+                <field name="idle_min"           type="measure"/>
+            </pivot>
+        </field>
+    </record>
+
+    <!-- ── Actions ────────────────────────────────────────────────────── -->
+    <record id="action_fleet_telematics_log" model="ir.actions.act_window">
+        <field name="name">Trip Logs</field>
+        <field name="res_model">fleet.telematics.log</field>
+        <field name="view_mode">list,form</field>
+        <field name="search_view_id" ref="view_fleet_telematics_log_search"/>
+    </record>
+
+    <record id="action_fleet_telematics_analytics" model="ir.actions.act_window">
+        <field name="name">Trip Analytics</field>
+        <field name="res_model">fleet.telematics.log</field>
+        <field name="view_mode">graph,pivot,list</field>
+        <field name="context">{'search_default_synced': 1}</field>
+        <field name="search_view_id" ref="view_fleet_telematics_log_search"/>
+    </record>
+
+    <record id="action_fleet_telematics_dashboard" model="ir.actions.act_window">
+        <field name="name">Driver Dashboard</field>
+        <field name="res_model">fleet.telematics.log</field>
+        <field name="view_mode">graph,pivot,list,form</field>
+        <field name="context">{'search_default_synced': 1, 'group_by': 'driver_id'}</field>
+        <field name="search_view_id" ref="view_fleet_telematics_log_search"/>
+    </record>
+
+</odoo>

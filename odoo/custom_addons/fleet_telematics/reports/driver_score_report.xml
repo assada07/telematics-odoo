@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="action_report_driver_score" model="ir.actions.report">
+        <field name="name">Monthly Score Report</field>
+        <field name="model">fleet.telematics.incentive</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">fleet_telematics.report_driver_score</field>
+        <field name="report_file">fleet_telematics.report_driver_score</field>
+        <field name="binding_model_id" ref="model_fleet_telematics_incentive"/>
+        <field name="binding_type">report</field>
+        <field name="paperformat_id" ref="base.paperformat_euro"/>
+    </record>
+
+    <template id="report_driver_score">
+        <t t-call="web.html_container">
+            <t t-call="web.external_layout">
+                <div class="page">
+                    <style>
+                        .rpt-title { font-size: 20px; font-weight: 600; color: #2E7D5E; margin-bottom: 4px; }
+                        .rpt-sub   { font-size: 12px; color: #888; margin-bottom: 20px; }
+                        .tier-badge { display:inline-block; padding:4px 16px; border-radius:20px; font-size:18px; font-weight:700; }
+                        .tier-A { background:#d4edda; color:#155724; }
+                        .tier-B { background:#d1ecf1; color:#0c5460; }
+                        .tier-C { background:#fff3cd; color:#856404; }
+                        .tier-D { background:#f8d7da; color:#721c24; }
+                        .stat-table { width:100%; border-collapse:collapse; margin:12px 0; font-size:12px; }
+                        .stat-table td { padding:6px 10px; border-bottom:1px solid #eee; }
+                        .stat-table td:first-child { color:#555; width:55%; }
+                        .stat-table td:last-child { font-weight:500; }
+                        .bonus-box { background:#f0f8f4; border:2px solid #2E7D5E; border-radius:8px;
+                                     padding:16px; text-align:center; margin-top:16px; }
+                        .bonus-box .amount { font-size:28px; font-weight:700; color:#2E7D5E; }
+                        .bonus-box .label  { font-size:11px; color:#666; }
+                        .page-break { page-break-after: always; }
+                    </style>
+
+                    <t t-foreach="docs" t-as="doc">
+                        <div class="rpt-title">Monthly Driver Score Report</div>
+                        <div class="rpt-sub">
+                            <t t-esc="doc.driver_id.name"/> —
+                            Period: <t t-esc="doc.period_month"/>/<t t-esc="doc.period_year"/>
+                        </div>
+
+                        <!-- Tier badge -->
+                        <div style="margin-bottom:16px;">
+                            <span t-attf-class="tier-badge tier-#{doc.incentive_tier or 'D'}">
+                                Tier <t t-esc="doc.incentive_tier or 'D'"/>
+                            </span>
+                        </div>
+
+                        <!-- Stats table -->
+                        <table class="stat-table">
+                            <tr><td>Total Trips</td><td><t t-esc="doc.total_trips or 0"/></td></tr>
+                            <tr><td>Total Distance (km)</td><td><t t-esc="'%.1f' % (doc.total_distance_km or 0)"/></td></tr>
+                            <tr><td>Avg Driver Score</td><td><t t-esc="'%.2f' % (doc.avg_score or 0)"/></td></tr>
+                            <tr><td>Min Driver Score</td><td><t t-esc="'%.2f' % (doc.min_score or 0)"/></td></tr>
+                            <tr><td>Total Harsh Events</td><td><t t-esc="doc.total_harsh_events or 0"/></td></tr>
+                            <tr><td>Total Idle Time (min)</td><td><t t-esc="'%.1f' % (doc.total_idle_min or 0)"/></td></tr>
+                        </table>
+
+                        <!-- Bonus box -->
+                        <div class="bonus-box">
+                            <div class="label">Bonus Percentage</div>
+                            <div class="amount"><t t-esc="'%.1f' % (doc.bonus_pct or 0)"/>%</div>
+                            <div style="margin:8px 0; font-size:12px; color:#555;">
+                                Base Salary: <t t-esc="'%.2f' % (doc.base_salary or 0)"/> THB
+                            </div>
+                            <div class="amount"><t t-esc="'%.2f' % (doc.bonus_amount or 0)"/> THB</div>
+                            <div class="label">Bonus Amount</div>
+                        </div>
+
+                        <!-- Status -->
+                        <div style="margin-top:12px; font-size:11px; color:#888;">
+                            Status: <t t-esc="dict(doc.fields_get(['state'])['state']['selection'])[doc.state]"/>
+                            <t t-if="doc.approved_by">
+                                | Approved by: <t t-esc="doc.approved_by.name"/>
+                            </t>
+                            <t t-if="doc.note">
+                                <br/>Note: <t t-esc="doc.note"/>
+                            </t>
+                        </div>
+
+                        <t t-if="not doc_last">
+                            <div class="page-break"/>
+                        </t>
+                    </t>
+                </div>
+            </t>
+        </t>
+    </template>
+
+</odoo>

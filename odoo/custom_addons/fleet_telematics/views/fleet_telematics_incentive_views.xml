@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_fleet_telematics_incentive_list" model="ir.ui.view">
+        <field name="name">fleet.telematics.incentive.list</field>
+        <field name="model">fleet.telematics.incentive</field>
+        <field name="arch" type="xml">
+            <tree decoration-success="state=='paid'"
+                  decoration-info="state=='approved'"
+                  decoration-warning="state=='confirmed'"
+                  decoration-muted="state=='draft'">
+                <field name="driver_id"/>
+                <field name="period_label"/>
+                <field name="total_trips"/>
+                <field name="avg_score"/>
+                <field name="min_score"/>
+                <field name="total_harsh_events"/>
+                <field name="incentive_tier" widget="badge"/>
+                <field name="bonus_pct"/>
+                <field name="base_salary"   optional="hide"/>
+                <field name="bonus_amount"/>
+                <field name="state"         widget="badge"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_fleet_telematics_incentive_form" model="ir.ui.view">
+        <field name="name">fleet.telematics.incentive.form</field>
+        <field name="model">fleet.telematics.incentive</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_confirm"   string="Confirm"   type="object"
+                            class="btn-primary"   invisible="state != 'draft'"/>
+                    <button name="action_approve"   string="Approve"   type="object"
+                            class="btn-primary"   invisible="state != 'confirmed'"/>
+                    <button name="action_mark_paid" string="Mark Paid" type="object"
+                            class="btn-success"   invisible="state != 'approved'"/>
+                    <button name="action_reset"     string="Reset"     type="object"
+                            class="btn-secondary" invisible="state not in ('confirmed','approved')"/>
+                    <field name="state" widget="statusbar"
+                           statusbar_visible="draft,confirmed,approved,paid"/>
+                </header>
+                <sheet>
+                    <group>
+                        <group string="ข้อมูล">
+                            <field name="driver_id"/>
+                            <field name="period_month"/>
+                            <field name="period_year"/>
+                            <field name="scoring_config_id"/>
+                            <field name="approved_by" readonly="1"/>
+                        </group>
+                        <group string="สรุปผล">
+                            <field name="total_trips"/>
+                            <field name="total_distance_km"/>
+                            <field name="avg_score"/>
+                            <field name="min_score"/>
+                            <field name="total_harsh_events"/>
+                            <field name="total_idle_min"/>
+                        </group>
+                    </group>
+                    <group string="โบนัส">
+                        <group>
+                            <field name="incentive_tier" widget="badge"/>
+                            <field name="bonus_pct"/>
+                        </group>
+                        <group>
+                            <field name="base_salary"/>
+                            <field name="bonus_amount"/>
+                        </group>
+                    </group>
+                    <field name="note" placeholder="หมายเหตุ..."/>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_fleet_incentive_pivot" model="ir.ui.view">
+        <field name="name">fleet.telematics.incentive.pivot</field>
+        <field name="model">fleet.telematics.incentive</field>
+        <field name="arch" type="xml">
+            <pivot string="Incentive Summary">
+                <field name="driver_id"    type="row"/>
+                <field name="period_label" type="col"/>
+                <field name="avg_score"    type="measure"/>
+                <field name="bonus_amount" type="measure"/>
+                <field name="total_trips"  type="measure"/>
+            </pivot>
+        </field>
+    </record>
+
+    <record id="action_fleet_telematics_incentive" model="ir.actions.act_window">
+        <field name="name">Incentives</field>
+        <field name="res_model">fleet.telematics.incentive</field>
+        <field name="view_mode">list,pivot,form</field>
+    </record>
+
+</odoo>

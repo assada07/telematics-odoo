@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_fleet_telematics_sync_wizard_form" model="ir.ui.view">
+        <field name="name">fleet.telematics.sync.wizard.form</field>
+        <field name="model">fleet.telematics.sync.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Manual Sync">
+                <group>
+                    <field name="sync_from"/>
+                    <field name="state" readonly="1"/>
+                </group>
+                <group invisible="state == 'draft'">
+                    <field name="result_message" readonly="1"/>
+                </group>
+                <footer>
+                    <button name="action_sync" string="Sync Now"
+                            type="object" class="btn-primary"
+                            invisible="state != 'draft'"/>
+                    <button string="Close" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <!-- action ก่อน -->
+    <record id="action_fleet_telematics_sync_wizard" model="ir.actions.act_window">
+        <field name="name">Manual Sync</field>
+        <field name="res_model">fleet.telematics.sync.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
+    <!-- menu หลัง action เสมอ -->
+    <menuitem id="menu_fleet_telematics_sync"
+              name="Sync Now"
+              parent="menu_fleet_telematics_config"
+              action="action_fleet_telematics_sync_wizard"
+              sequence="20"/>
+
+</odoo>

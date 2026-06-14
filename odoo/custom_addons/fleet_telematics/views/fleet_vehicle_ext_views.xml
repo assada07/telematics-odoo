@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- เพิ่ม Telematics tab + ปุ่มเช็คสถานะใน fleet.vehicle form -->
+    <record id="view_fleet_vehicle_form_telematics" model="ir.ui.view">
+        <field name="name">fleet.vehicle.form.telematics</field>
+        <field name="model">fleet.vehicle</field>
+        <field name="inherit_id" ref="fleet.fleet_vehicle_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//header" position="inside">
+                <button name="action_check_vehicle_status"
+                        string="🛰 เช็คสถานะรถ"
+                        type="object"
+                        class="btn-secondary"
+                        invisible="not telematics_device_id"/>
+            </xpath>
+            <notebook position="inside">
+                <page string="Telematics" name="telematics">
+                    <group>
+                        <group string="อุปกรณ์">
+                            <field name="telematics_device_id"/>
+                            <field name="online_status" widget="badge"
+                                   decoration-success="online_status == 'online'"
+                                   decoration-danger="online_status == 'offline'"
+                                   decoration-muted="online_status == 'unknown'"/>
+                            <field name="last_seen"/>
+                            <field name="ignition" widget="boolean_toggle"/>
+                            <field name="current_speed"/>
+                        </group>
+                        <group string="สรุป">
+                            <field name="total_trips"/>
+                            <field name="total_distance_km"/>
+                            <field name="avg_driver_score"/>
+                            <field name="last_lat" readonly="1"/>
+                            <field name="last_lon" readonly="1"/>
+                        </group>
+                    </group>
+                    <field name="telematics_log_ids">
+                        <tree default_order="trip_start desc">
+                            <field name="trip_start"/>
+                            <field name="driver_id"/>
+                            <field name="distance_km"/>
+                            <field name="duration_min"/>
+                            <field name="driver_score"/>
+                            <field name="harsh_brake_count"/>
+                            <field name="state" widget="badge"/>
+                        </tree>
+                    </field>
+                </page>
+            </notebook>
+        </field>
+    </record>
+
+    <!-- เพิ่มปุ่มเช็คสถานะใน list view ของรถ -->
+    <record id="view_fleet_vehicle_list_telematics" model="ir.ui.view">
+        <field name="name">fleet.vehicle.list.telematics</field>
+        <field name="model">fleet.vehicle</field>
+        <field name="inherit_id" ref="fleet.fleet_vehicle_view_kanban"/>
+        <field name="arch" type="xml">
+            <!-- เพิ่ม online_status ใน kanban card -->
+            <xpath expr="//kanban" position="attributes">
+                <attribute name="sample">1</attribute>
+            </xpath>
+        </field>
+    </record>
+
+</odoo>
