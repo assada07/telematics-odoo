@@ -1,13 +1,17 @@
 name: Deploy Odoo
 on:
-  push:
+  workflow_run:
+    workflows: ["CI Pipeline - Odoo"]
     branches: [main]
+    types: [completed]
+
 jobs:
   deploy:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Create Docker networks and volumes
         run: |
           docker network create odoo-net || true
@@ -18,9 +22,6 @@ jobs:
           docker volume create odoo-log || true
           docker volume create nginx-log || true
 
-      - name: Create .env
-        run: |
-          cat > .env << EOF
       - name: Create .env
         run: |
           printf "ODOO_DB_USER=%s\n" "${{ secrets.ODOO_DB_USER }}" > .env
@@ -34,4 +35,5 @@ jobs:
           docker compose \
             -f docker-compose.yml \
             -f docker-compose.odoo.yml \
+            -f docker-compose.prod.yml \
             up -d --build
