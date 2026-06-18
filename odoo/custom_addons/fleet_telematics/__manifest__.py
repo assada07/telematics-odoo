@@ -3,7 +3,7 @@
 # ==============================================================================
 {
     'name': 'Fleet Telematics',
-    'version': '17.0.4.0.0',
+    'version': '19.0.4.0.0',
     'category': 'Fleet',
     'summary': 'Driver Behavior Monitoring, Scoring, Incentives & Maintenance via MTD API',
 
