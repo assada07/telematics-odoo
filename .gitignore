@@ -3,3 +3,27 @@ __pycache__/
 .env
 .DS_Store
 logs/*.log
+
+# GitHub Actions Runner files (should not be committed)
+.credentials
+.credentials_rsaparams
+.path
+.runner
+.runner_migrated
+.service
+_diag/
+_work/
+bin/
+bin.*/
+externals/
+externals.*/
+config.sh
+env.sh
+run.sh
+run-helper.sh
+run-helper.sh.template
+run-helper.cmd.template
+safe_sleep.sh
+svc.sh
+update.finished
+.idea/
