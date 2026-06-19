@@ -12,11 +12,10 @@
     'depends': [
         'fleet',
         'hr',
-        'web'
+        'web',
     ],
 
     'data': [
-
         # 1. Security
         'security/ir.model.access.csv',
 
@@ -26,7 +25,10 @@
         # 3. Config Settings
         'views/fleet_telematics_config_views.xml',
 
-        # 4. Views
+        # 4. Menu (ย้ายขึ้นมาโหลดก่อนหน้า UI อื่นๆ เพื่อเป็นฐานราก)
+        'views/menu_items.xml',
+
+        # 5. Views
         'views/fleet_telematics_log_views.xml',
         'views/fleet_telematics_event_views.xml',
         'views/fleet_telematics_scoring_views.xml',
@@ -36,9 +38,6 @@
         'views/fleet_telematics_dashboard_views.xml',
         'views/fleet_telematics_reports_views.xml',
         'views/fleet_telematics_portal_views.xml',
-
-        # 5. Menu
-        'views/menu_items.xml',
 
         # 6. Reports
         'reports/trip_summary_report.xml',
