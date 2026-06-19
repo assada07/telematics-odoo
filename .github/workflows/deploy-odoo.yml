@@ -12,10 +12,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Fix Docker credentials
+      # 🌟 ปรับตรงนี้: ทำ Sandbox แยกเก็บคอนฟิก Docker ชั่วคราวแทนการเข้าไปแก้ไฟล์หลักระบบ Mac
+      - name: Prepare Docker Sandbox Configuration
         run: |
-          jq '.credsStore = ""' ~/.docker/config.json > /tmp/docker-config.json && mv /tmp/docker-config.json ~/.docker/config.json
+          mkdir -p .docker_fallback
+          echo '{"credsStore":""}' > .docker_fallback/config.json
 
+      # สร้าง networks และ volumes ถ้ายังไม่มี (ตัวที่คุณเตรียมไว้ ดีมากครับ)
       - name: Create Docker networks and volumes
         run: |
           docker network create odoo-net || true
@@ -26,6 +29,7 @@ jobs:
           docker volume create odoo-log || true
           docker volume create nginx-log || true
 
+      # สร้าง .env แนะนำใส่คำสั่งเคลียร์สแตกเก่า (down) ไว้ก่อน up เพื่อเคลียร์คอนเทนเนอร์ตกค้าง
       - name: Create .env
         run: |
           printf "ODOO_DB_USER=%s\n" "${{ secrets.ODOO_DB_USER }}" > .env
@@ -34,10 +38,21 @@ jobs:
           printf "ODOO_ADMIN_PASSWORD=%s\n" "${{ secrets.ODOO_ADMIN_PASSWORD }}" >> .env
           printf "LANG=C.UTF-8\n" >> .env
 
+      # 🌟 ปรับตรงนี้: ใส่ env: DOCKER_CONFIG บายพาสสิทธิ์พวงกุญแจตอนสั่ง Build
       - name: Deploy Odoo
+        env:
+          DOCKER_CONFIG: ${{ github.workspace }}/.docker_fallback
         run: |
+          # เคลียร์ตัวเก่าออกไปก่อนแบบปลอดภัย (ไม่ลบ volume)
           docker compose \
             -f docker-compose.yml \
             -f docker-compose.odoo.yml \
             -f docker-compose.prod.yml \
-            up -d --build
+            down --remove-orphans
+
+          # สั่งประกอบร่าง Odoo 19 ตัวใหม่แกะกล่องทันที
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.odoo.yml \
+            -f docker-compose.prod.yml \
+            up -d --build --remove-orphans
