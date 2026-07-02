@@ -93,6 +93,7 @@ jobs:
               -i "$MODULES" \
               -u "$MODULES" \
               -d "${{ secrets.ODOO_DB_NAME }}" \
+              --no-http \
               --stop-after-init
           fi
 
