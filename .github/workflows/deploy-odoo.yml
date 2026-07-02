@@ -16,7 +16,7 @@ jobs:
       - name: Prepare Docker Sandbox Configuration
         run: |
            mkdir -p .docker_fallback/cli-plugins
-           mecho '{"credsStore":""}' > .docker_fallback/config.json
+           echo '{"credsStore":""}' > .docker_fallback/config.json
            ln -sf "$HOME/.docker/cli-plugins/docker-compose" .docker_fallback/cli-plugins/docker-compose
 
       # สร้าง networks และ volumes ถ้ายังไม่มี (ตัวที่คุณเตรียมไว้ ดีมากครับ)
