@@ -2,9 +2,17 @@
 # models/telematics_incentive.py
 # โมเดลคำนวณโบนัสประจำเดือน เชื่อมโยงกับ hr.contract
 # ระบบ Incentive / Bonus HR
+#
+# แก้ไข 2026-06-30 (ตามคำตอบยืนยันจาก Backend):
+#   GET /api/v1/drivers/{driver_id}/bonus คืน bonus_pct (และ tier) มาให้แล้ว
+#   Backend ไม่รู้ hr.contract.wage จึงให้ Odoo เป็นฝ่ายคูณเงินเดือนเอง
+#   → ตัด logic คำนวณ tier จาก scoring_config thresholds ออกจาก flow หลัก
+#     เหลือไว้แค่เป็น fallback เผื่อเรียก Backend ไม่สำเร็จ (เช่น offline)
 # ==============================================================================
 import logging
 from datetime import date
+
+import requests
 
 from odoo import models, fields, api
 
@@ -15,6 +23,14 @@ class TelematicsIncentive(models.Model):
     _name        = 'fleet.telematics.incentive'
     _description = 'Fleet Telematics Monthly Incentive'
     _order       = 'period_year desc, period_month desc'
+
+    # กันสร้างโบนัสซ้ำที่ระดับ DB จริง (เดิมเช็คแค่ใน cron แบบ soft-check
+    # ถ้าสร้างผ่านฟอร์มมือมีโอกาสสร้างซ้ำเดือนเดียวกันได้ — กระทบเงินจริง)
+    _sql_constraints = [
+        ('driver_period_unique',
+         'UNIQUE(driver_id, period_month, period_year)',
+         'พนักงานคนนี้มีรายการโบนัสของเดือน/ปีนี้อยู่แล้ว — ห้ามสร้างซ้ำ'),
+    ]
 
     # ============================================================
     # [A] ระบุว่าคำนวณโบนัสของใคร รอบไหน
@@ -57,18 +73,26 @@ class TelematicsIncentive(models.Model):
 
     # ============================================================
     # [C] ผลลัพธ์ Tier และจำนวนโบนัสที่ได้รับ
-    # tier จาก avg_score เทียบกับเกณฑ์ใน scoring config
-    # bonus_amount = base_salary (จาก hr.contract) × bonus_pct / 100
+    # ดึง bonus_pct/tier จาก Backend (GET /drivers/{id}/bonus) แล้วคูณ
+    # base_salary (จาก hr.contract) เอง — ไม่ใช่ field compute อัตโนมัติ
+    # อีกต่อไป เพราะต้องเรียก API ภายนอก ตั้งค่าผ่าน _apply_backend_bonus()
+    # ที่ถูกเรียกตอนสร้างใน cron หรือกดปุ่ม "Refresh from Backend" เอง
     # ============================================================
     incentive_tier = fields.Selection([
         ('A', 'A — Excellent'),
         ('B', 'B — Good'),
         ('C', 'C — Fair'),
         ('D', 'D — Needs Improvement'),
-    ], string='Tier', compute='_compute_incentive', store=True)
-    bonus_pct    = fields.Float(string='Bonus %',      digits=(5, 2),   compute='_compute_incentive', store=True)
-    base_salary  = fields.Float(string='Base Salary',  digits=(10, 2),  compute='_compute_incentive', store=True)
-    bonus_amount = fields.Float(string='Bonus (THB)',  digits=(10, 2),  compute='_compute_incentive', store=True)
+    ], string='Tier', default='D')
+    bonus_pct    = fields.Float(string='Bonus %',      digits=(5, 2),  default=0.0)
+    base_salary  = fields.Float(string='Base Salary',  digits=(10, 2), default=0.0)
+    bonus_amount = fields.Float(string='Bonus (THB)',  digits=(10, 2), default=0.0)
+    bonus_source = fields.Selection([
+        ('backend', 'Backend API'),
+        ('local_fallback', 'Local Fallback (Backend ไม่พร้อมใช้งาน)'),
+    ], string='Bonus Source', readonly=True,
+        help='ระบุว่า bonus_pct ปัจจุบันมาจาก Backend จริง หรือคำนวณสำรองในเครื่อง')
+    bonus_last_synced = fields.Datetime(string='Bonus Synced At', readonly=True)
 
     # ============================================================
     # [D] Workflow State ของใบโบนัส
@@ -95,18 +119,17 @@ class TelematicsIncentive(models.Model):
                 rec.period_label = '-'
 
     # ============================================================
-    # [F] คำนวณโบนัสทั้งหมดจาก Trip Logs + hr.contract
+    # [F] คำนวณสถิติจาก Trip Logs เท่านั้น (avg_score, total_trips ฯลฯ)
+    # ไม่รวม bonus_pct/tier แล้ว — ย้ายไป _apply_backend_bonus() ด้านล่าง
     # ============================================================
-    @api.depends('driver_id', 'period_month', 'period_year', 'scoring_config_id')
+    @api.depends('driver_id', 'period_month', 'period_year')
     def _compute_incentive(self):
         TripLog = self.env['fleet.telematics.log'].sudo()
         for rec in self:
             if not (rec.driver_id and rec.period_month and rec.period_year):
                 rec.avg_score = rec.min_score = 0.0
-                rec.bonus_pct = rec.base_salary = rec.bonus_amount = 0.0
                 rec.total_trips = rec.total_harsh_events = 0
                 rec.total_distance_km = rec.total_idle_min = 0.0
-                rec.incentive_tier = 'D'
                 continue
 
             y, m = rec.period_year, rec.period_month
@@ -131,24 +154,96 @@ class TelematicsIncentive(models.Model):
                 for l in logs
             )
 
-            cfg = rec.scoring_config_id or self.env['fleet.telematics.scoring.config'].search(
-                [('active', '=', True)], limit=1)
-            if cfg and rec.avg_score >= cfg.tier_a_min_score:
-                rec.incentive_tier, rec.bonus_pct = 'A', cfg.tier_a_bonus_pct
-            elif cfg and rec.avg_score >= cfg.tier_b_min_score:
-                rec.incentive_tier, rec.bonus_pct = 'B', cfg.tier_b_bonus_pct
-            elif cfg and rec.avg_score >= cfg.tier_c_min_score:
-                rec.incentive_tier, rec.bonus_pct = 'C', cfg.tier_c_bonus_pct
-            else:
-                rec.incentive_tier, rec.bonus_pct = 'D', 0.0
+    # ============================================================
+    # [F2] ดึง bonus_pct จาก Backend (GET /drivers/{id}/bonus) แล้วคูณ
+    # base_salary เอง — ตามคำตอบยืนยันจากทีม Backend (2026-06-30):
+    # "Backend ไม่รู้ hr.contract.wage ดังนั้น /bonus คืนแค่ bonus_pct (%)
+    #  Odoo ต้องคูณกับเงินเดือนจริงเอง"
+    #
+    # ถ้าเรียก Backend ไม่สำเร็จ (offline/timeout) ใช้ fallback คำนวณ
+    # tier จาก threshold ใน Scoring Config เพื่อไม่ให้ระบบหยุดทำงาน
+    # แต่จะ mark bonus_source = 'local_fallback' ให้รู้ว่าตัวเลขยังไม่ยืนยัน
+    # จาก Backend ควรกด "Refresh from Backend" ซ้ำก่อน Approve จริง
+    # ============================================================
+    def _apply_backend_bonus(self):
+        Config = self.env['fleet.telematics.config']
+        api_url = Config.get_active_api_url()
+        api_key = Config.get_active_api_key()
 
-            # ดึง base_salary จาก hr.contract (สัญญาจ้างที่ active)
+        for rec in self:
+            # ดึง base_salary จาก hr.contract (สัญญาจ้างที่ active) เสมอ
             contract = self.env['hr.contract'].sudo().search([
                 ('employee_id', '=', rec.driver_id.id),
                 ('state', '=', 'open'),
             ], limit=1)
-            rec.base_salary  = contract.wage if contract else 0.0
-            rec.bonus_amount = round(rec.base_salary * rec.bonus_pct / 100, 2)
+            base_salary = contract.wage if contract else 0.0
+
+            bonus_pct = None
+            tier = None
+
+            if api_url:
+                try:
+                    resp = requests.get(
+                        f'{api_url}/api/v1/drivers/{rec.driver_id.id}/bonus',
+                        headers={'APIKEY': api_key},
+                        timeout=10,
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        bonus_pct = float(data.get('bonus_pct', 0) or 0)
+                        tier = data.get('incentive_tier')  # แก้บั๊ก: ชื่อจริงจาก Backend คือ
+                                                            # 'incentive_tier' ไม่ใช่ 'tier'
+                                                            # (ยืนยันจาก JSON ตัวอย่างจริง 2026-06-30)
+                    else:
+                        _logger.warning(
+                            'Bonus API HTTP %s สำหรับ driver_id=%s — ใช้ fallback',
+                            resp.status_code, rec.driver_id.id,
+                        )
+                except requests.RequestException as e:
+                    _logger.warning(
+                        'เรียก /drivers/%s/bonus ไม่สำเร็จ (%s) — ใช้ fallback',
+                        rec.driver_id.id, e,
+                    )
+
+            if bonus_pct is not None:
+                rec.write({
+                    'base_salary':       base_salary,
+                    'bonus_pct':         bonus_pct,
+                    'incentive_tier':    tier or rec._local_tier_from_score(),
+                    'bonus_amount':      round(base_salary * bonus_pct / 100, 2),
+                    'bonus_source':      'backend',
+                    'bonus_last_synced': fields.Datetime.now(),
+                })
+            else:
+                # Fallback: คำนวณ tier เองจาก scoring config thresholds
+                tier_fb, pct_fb = rec._local_tier_from_score(return_pct=True)
+                rec.write({
+                    'base_salary':       base_salary,
+                    'bonus_pct':         pct_fb,
+                    'incentive_tier':    tier_fb,
+                    'bonus_amount':      round(base_salary * pct_fb / 100, 2),
+                    'bonus_source':      'local_fallback',
+                    'bonus_last_synced': fields.Datetime.now(),
+                })
+
+    def _local_tier_from_score(self, return_pct=False):
+        """Fallback เท่านั้น — ใช้เมื่อเรียก Backend ไม่สำเร็จ"""
+        self.ensure_one()
+        cfg = self.scoring_config_id or self.env['fleet.telematics.scoring.config'].search(
+            [('active', '=', True)], limit=1)
+        if cfg and self.avg_score >= cfg.tier_a_min_score:
+            tier, pct = 'A', cfg.tier_a_bonus_pct
+        elif cfg and self.avg_score >= cfg.tier_b_min_score:
+            tier, pct = 'B', cfg.tier_b_bonus_pct
+        elif cfg and self.avg_score >= cfg.tier_c_min_score:
+            tier, pct = 'C', cfg.tier_c_bonus_pct
+        else:
+            tier, pct = 'D', 0.0
+        return (tier, pct) if return_pct else tier
+
+    def action_refresh_bonus_from_backend(self):
+        """ปุ่มในฟอร์ม — ดึง bonus_pct ล่าสุดจาก Backend ใหม่ด้วยมือ"""
+        self._apply_backend_bonus()
 
     # ============================================================
     # [G] ปุ่มเปลี่ยนสถานะตาม Workflow
@@ -157,6 +252,8 @@ class TelematicsIncentive(models.Model):
     def action_confirm(self):
         for rec in self:
             if rec.state == 'draft':
+                # ดึง/อัปเดต bonus_pct จาก Backend ครั้งสุดท้ายก่อน lock ตัวเลข
+                rec._apply_backend_bonus()
                 rec.state = 'confirmed'
 
     def action_approve(self):
@@ -210,13 +307,14 @@ class TelematicsIncentive(models.Model):
             ], limit=1):
                 continue  # dedup — driver แต่ละคนมีได้เพียง 1 record ต่อเดือน
 
-            self.create({
+            new_rec = self.create({
                 'driver_id':         driver.id,
                 'scoring_config_id': cfg.id if cfg else False,
                 'period_month':      period_month,
                 'period_year':       period_year,
                 'state':             'draft',
             })
+            new_rec._apply_backend_bonus()
             created += 1
 
         _logger.info(

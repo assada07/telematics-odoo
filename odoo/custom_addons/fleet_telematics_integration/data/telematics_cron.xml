@@ -4,8 +4,13 @@
   Scheduled Actions (Cron Jobs)
 
   UC-04: Cron ดึง Trip Logs → เรียก fleet.telematics.log._cron_sync_trips()
-         Logic ทั้งหมด (window time, dedup 3 ชั้น, batch 5 วินาที)
-         อยู่ใน models/telematics_log.py section [I]–[N]
+         ทุก 5 นาที (interval_number=5, interval_type='minutes')
+
+         Flow: GET /api/v1/trips/unsynced?last_id=...
+               → บันทึกลง Odoo (Idempotent: search ก่อน write/create)
+               → PATCH /api/v1/trips/batch/mark-synced
+               → เก็บ last_id ใหม่ลง ir.config_parameter
+         Logic ทั้งหมดอยู่ใน models/telematics_log.py section [I]–[K]
 -->
 <odoo>
 

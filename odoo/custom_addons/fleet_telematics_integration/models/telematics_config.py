@@ -67,6 +67,11 @@ class TelematicsConfig(models.Model):
         readonly=True
     )
 
+    # ⚠️ หมายเหตุเรื่อง Datetime: fields.Datetime ของ Odoo เก็บค่าใน DB เป็น
+    # UTC เสมอ (ห้าม localize เป็น timezone ผู้ใช้ก่อนบันทึกเด็ดขาด) — ใช้
+    # fields.Datetime.now() / datetime.utcnow() เท่านั้นเวลาเขียนค่าลงฟิลด์นี้
+    # ส่วนการแปลงไปแสดงตาม timezone ของผู้ใช้ (res.users.tz) เป็นหน้าที่ของ
+    # Odoo ตอน render UI ให้อัตโนมัติอยู่แล้ว ไม่ต้องแปลงเองในโค้ด
     last_test_at = fields.Datetime(string='Last Tested At', readonly=True)
     last_sync_at = fields.Datetime(string='Last Synced At', readonly=True)
     last_error   = fields.Text(string='Last Error',         readonly=True)
@@ -84,6 +89,31 @@ class TelematicsConfig(models.Model):
         if raw.startswith('http://') or raw.startswith('https://'):
             return raw.rstrip('/')
         return f'http://{raw}'.rstrip('/')
+
+    # ============================================================
+    # [D2] Database Lockdown — บล็อกการสร้างเรคคอร์ดใหม่จากทุกช่องทาง
+    #   - ปุ่ม New บน List/Form, RPC/External API, import CSV/XLSX,
+    #     หรือโมดูลอื่นที่เผลอเรียก .create() ตรง ๆ → โดน UserError ทันที
+    #   - อนุญาตเฉพาะ "การสร้างเรคคอร์ดแรกของระบบ" ที่มาจาก server action
+    #     action_open_telematics_config (กรณียังไม่มี config เลย) โดยต้องส่ง
+    #     context key 'allow_telematics_config_create=True' มาด้วยเท่านั้น
+    #   ⚠️ หมายเหตุความปลอดภัยของข้อมูล: เพราะมีเงื่อนไข [D3]/Server Action
+    #     ที่ unlink() เรคคอร์ดส่วนเกินอัตโนมัติ การบล็อก create() ที่นี่จึง
+    #     สำคัญมาก — ถ้าไม่บล็อก จะมีคนสร้างเรคคอร์ดใหม่ซ้ำได้เรื่อย ๆ แล้วถูก
+    #     ระบบ cleanup ลบทิ้งแบบไม่มีการแจ้งเตือนล่วงหน้า
+    # ============================================================
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        if not self.env.context.get('allow_telematics_config_create'):
+            raise UserError(
+                'ไม่อนุญาตให้สร้างเรคคอร์ด Fleet Telematics Config เพิ่ม '
+                '(Database Lockdown)\n'
+                'ระบบนี้อนุญาตให้มีค่าตั้งค่าได้เพียง 1 รายการในระบบเท่านั้น '
+                'กรุณาเปิดเมนู "Fleet Telematics Settings" แล้วแก้ไข (Edit) '
+                'เรคคอร์ดที่มีอยู่แทนการสร้างใหม่'
+            )
+        return super().create(vals_list)
 
     # ============================================================
     # [E] โหลดค่าจาก ir.config_parameter เมื่อเปิดฟอร์มใหม่ (New)

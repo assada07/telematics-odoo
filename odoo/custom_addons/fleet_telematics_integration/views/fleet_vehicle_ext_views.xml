@@ -18,6 +18,15 @@
             <!-- ── ปุ่มใน Header ─────────────────────────────────────────── -->
             <xpath expr="//header" position="inside">
 
+                <!-- ลงทะเบียน Device ครั้งแรก (รวมมาจากเมนู "Devices" เดิม
+                     ให้กรอกและกดได้จากหน้านี้ที่เดียว ไม่ต้องสลับเมนู) -->
+                <button name="action_register_device"
+                        string="📝 Register Device"
+                        type="object"
+                        class="btn-primary"
+                        invisible="not telematics_device_id or telematics_register_status == 'registered'"
+                        confirm="ยืนยันลงทะเบียน Device นี้กับ Backend ครั้งแรกใช่ไหม?"/>
+
                 <!-- [งานด่วน] เช็คสถานะแบบ Real-time -->
                 <button name="action_check_vehicle_status"
                         string="☀️ เช็คสถานะรถ"
@@ -25,7 +34,8 @@
                         class="btn-secondary"
                         invisible="not telematics_device_id"/>
 
-                <!-- ส่งรถ + บอร์ดไปยัง Backend ทันที -->
+                <!-- ส่งรถ + บอร์ดไปยัง Backend ทันที (ใช้ตอน Device ลงทะเบียนแล้ว
+                     แต่ต้องการย้าย/อัปเดตการผูกกับรถคันนี้) -->
                 <button name="action_sync_to_backend"
                         string="⬆️ ส่งรถและบอร์ดไป Backend"
                         type="object"
@@ -59,10 +69,36 @@
                         ✅ <strong>อัปเดตสำเร็จ</strong> — ส่งข้อมูลไป Backend เรียบร้อยแล้ว
                     </div>
 
+                    <!-- เตือนถ้ายังไม่ลงทะเบียน Device กับ Backend เลย -->
+                    <div class="alert alert-secondary mb-3" role="alert"
+                         invisible="not telematics_device_id or telematics_register_status != 'draft'">
+                        📝 Device นี้ยังไม่เคยลงทะเบียนกับ Backend — กรอก Device Name แล้วกด
+                        "Register Device" ด้านบนก่อนใช้งานครั้งแรก
+                    </div>
+                    <div class="alert alert-danger mb-3" role="alert"
+                         invisible="telematics_register_status != 'error'">
+                        ❌ ลงทะเบียนไม่สำเร็จ: <field name="telematics_register_error" readonly="1" nolabel="1"/>
+                    </div>
+
                     <group>
                         <group string="อุปกรณ์ GPS">
                             <field name="telematics_device_id"
                                    placeholder="เช่น KTC-001"/>
+                            <field name="telematics_device_name"
+                                   placeholder="เช่น Device 1"
+                                   invisible="not telematics_device_id"/>
+                            <field name="driver_id" readonly="1"
+                                   string="คนขับปัจจุบัน"
+                                   widget="many2one_avatar_employee"/>
+                            <field name="driver_backend_id" readonly="1"
+                                   invisible="not driver_id"/>
+                            <field name="telematics_register_status" widget="badge"
+                                   decoration-success="telematics_register_status == 'registered'"
+                                   decoration-danger="telematics_register_status == 'error'"
+                                   decoration-muted="telematics_register_status == 'draft'"
+                                   invisible="not telematics_device_id"/>
+                            <field name="telematics_registered_at" readonly="1"
+                                   invisible="telematics_register_status != 'registered'"/>
                             <field name="online_status" widget="badge"
                                    decoration-success="online_status == 'online'"
                                    decoration-danger="online_status == 'offline'"

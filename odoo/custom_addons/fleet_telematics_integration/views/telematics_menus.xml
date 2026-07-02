@@ -29,6 +29,22 @@
               web_icon="fleet_telematics_integration,static/description/icon.png"/>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!--  2.0 Devices — ปิดเมนูนี้แล้ว (2026-06-30)                       -->
+    <!--  เดิมแยกเป็นเมนูต่างหาก ทำให้มี 2 ทางผูก Device กับรถพร้อมกัน    -->
+    <!--  (อีกทางคือแท็บ "Telematics Settings" ในฟอร์มรถ fleet.vehicle)  -->
+    <!--  เสี่ยงข้อมูลขัดแย้งกัน — รวมเหลือทางเดียวในหน้ารถแทนแล้ว        -->
+    <!--  โมเดล fleet.telematics.device ยังอยู่ในระบบ (ไม่ลบ เพื่อไม่ให้  -->
+    <!--  Upgrade พังถ้ามีข้อมูลอยู่แล้ว) แค่ไม่แสดงเมนูอีกต่อไป          -->
+    <!--
+    <menuitem id="menu_telematics_devices"
+              name="Devices"
+              parent="menu_fleet_telematics_root"
+              action="action_telematics_device"
+              groups="fleet.fleet_group_manager"
+              sequence="5"/>
+    -->
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
     <!--  2.1 Dashboard                                                  -->
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <menuitem id="menu_telematics_dashboard"
@@ -56,6 +72,17 @@
               parent="menu_telematics_dashboard"
               action="action_telematics_incentive_summary"
               sequence="30"/>
+
+    <!-- Live Map (Real-time) — UC-06 (เพิ่มใหม่: เดิมไม่มี widget เลย) -->
+    <record id="action_telematics_live_map" model="ir.actions.client">
+        <field name="name">Live Map</field>
+        <field name="tag">fleet_telematics_live_map</field>
+    </record>
+    <menuitem id="menu_telematics_dashboard_live_map"
+              name="Live Map"
+              parent="menu_telematics_dashboard"
+              action="action_telematics_live_map"
+              sequence="5"/>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <!--  2.2 Trip Logs                                                  -->
@@ -114,11 +141,11 @@
               parent="menu_fleet_telematics_root"
               sequence="60"/>
 
-    <!-- Driver Score Report -->
+    <!-- Driver Score Report — แก้แล้ว: เดิมชี้ไป action_telematics_incentive (ผิด ซ้ำกับเมนู Incentive/Bonus) -->
     <menuitem id="menu_telematics_report_driver_score"
               name="Driver Score Report"
               parent="menu_telematics_reports"
-              action="action_telematics_incentive"
+              action="action_telematics_driver_score_report"
               sequence="10"/>
 
     <!-- Fuel Efficiency Report -->
@@ -142,13 +169,34 @@
               action="action_telematics_incentive_summary"
               sequence="40"/>
 
+    <!-- Fuel &amp; Score Report — ดึงตรงจาก Backend (เพิ่มใหม่ UC-07/08) -->
+    <menuitem id="menu_telematics_report_backend_live"
+              name="Fuel &amp; Score Report (Backend สด)"
+              parent="menu_telematics_reports"
+              action="action_telematics_fuel_report_wizard"
+              sequence="50"/>
+
+    <!-- Payload Inbox — ปิดเมนูแล้ว (2026-07-01)
+         ไม่ได้อยู่ใน scope FDD เลยสักบรรทัด เป็นของที่ทีมเดิมเขียนทิ้งไว้
+         ไม่ลบโมเดลทิ้งเผื่อมีข้อมูลอยู่แล้ว แค่ซ่อนเมนูออก
+    <menuitem id="menu_telematics_payload_inbox"
+              name="Payload Inbox"
+              parent="menu_fleet_telematics_root"
+              action="action_telematics_payload"
+              groups="fleet.fleet_group_manager"
+              sequence="95"/>
+    -->
+
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <!--  Settings — Fleet Telematics API Config                         -->
     <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- Settings — จำกัดเฉพาะ fleet_group_manager เท่านั้น (เดิมไม่มี groups=
+         ทำให้ user ทั่วไปกดแล้วเจอ Access Error เพราะไม่มีสิทธิ์ในโมเดลนี้) -->
     <menuitem id="menu_telematics_settings"
               name="Settings"
               parent="menu_fleet_telematics_root"
               action="fleet_telematics_integration.action_open_telematics_config"
+              groups="fleet.fleet_group_manager"
               sequence="99"/>
 
 </odoo>

@@ -38,11 +38,19 @@
     </record>
 
     <!-- ── Trip List View ─────────────────────────────────────────────── -->
+    <!--
+        🔒 READ-ONLY LOCKDOWN: ข้อมูลทั้งหมดมาจาก Automated Pipeline
+        (Cron Job ทุก 5 นาที ดึงจาก Backend ภายนอก) และคะแนนในตารางนี้ถูก
+        ส่งต่อไปคำนวณ Incentive/Bonus ในระบบ HR — ห้ามผู้ใช้ทั่วไป
+        สร้าง/ลบ/แก้ไข/ทำซ้ำเรคคอร์ดเองเด็ดขาด เพื่อป้องกัน Data Integrity
+        และความเสี่ยงด้านการเงิน
+    -->
     <record id="view_telematics_log_list" model="ir.ui.view">
         <field name="name">fleet.telematics.log.list</field>
         <field name="model">fleet.telematics.log</field>
         <field name="arch" type="xml">
             <list default_order="trip_start desc" sample="1"
+                  create="0" delete="0" edit="0" duplicate="0"
                   decoration-success="state=='synced'"
                   decoration-info="state=='confirmed'"
                   decoration-muted="state=='draft'"
@@ -68,11 +76,12 @@
     </record>
 
     <!-- ── Trip Form View (Trip Detail) ───────────────────────────────── -->
+    <!-- 🔒 READ-ONLY LOCKDOWN: ดูรายละเอียดได้อย่างเดียว ห้ามแก้/สร้าง/ลบ/ทำซ้ำ -->
     <record id="view_telematics_log_form" model="ir.ui.view">
         <field name="name">fleet.telematics.log.form</field>
         <field name="model">fleet.telematics.log</field>
         <field name="arch" type="xml">
-            <form>
+            <form create="0" delete="0" edit="0" duplicate="0">
                 <header>
                     <button name="action_confirm" string="Confirm" type="object"
                             class="btn-primary" invisible="state != 'draft'"/>
@@ -113,7 +122,7 @@
                         <!-- Tab: Event List -->
                         <page string="Event List" name="events">
                             <field name="event_ids">
-                                <list>
+                                <list create="0" delete="0" edit="0">
                                     <field name="occurred_at"    string="เวลาเกิด"/>
                                     <field name="event_type"     widget="badge"/>
                                     <field name="severity"/>
@@ -207,18 +216,32 @@
     <record id="action_telematics_analytics" model="ir.actions.act_window">
         <field name="name">Trip Analytics</field>
         <field name="res_model">fleet.telematics.log</field>
-        <field name="view_mode">graph,pivot,list</field>
+        <field name="view_mode">pivot,graph,list</field>
         <field name="context">{'search_default_synced': 1}</field>
         <field name="search_view_id" ref="view_telematics_log_search"/>
     </record>
+    <!-- ผูกกราฟ Harsh Events เป็นมุมมองกราฟของ Trip Analytics โดยเฉพาะ -->
+    <record id="action_telematics_analytics_view_graph" model="ir.actions.act_window.view">
+        <field name="sequence" eval="1"/>
+        <field name="view_mode">graph</field>
+        <field name="view_id" ref="view_telematics_log_graph_harsh"/>
+        <field name="act_window_id" ref="action_telematics_analytics"/>
+    </record>
 
-    <!-- Dashboard Action — KPI Summary + Fuel + Incentive Overview -->
+    <!-- Dashboard Action — KPI Summary (Score Trend) -->
     <record id="action_telematics_dashboard" model="ir.actions.act_window">
         <field name="name">Dashboard</field>
         <field name="res_model">fleet.telematics.log</field>
         <field name="view_mode">graph,pivot,list</field>
         <field name="context">{'search_default_synced': 1, 'group_by': 'driver_id'}</field>
         <field name="search_view_id" ref="view_telematics_log_search"/>
+    </record>
+    <!-- ผูกกราฟ Score Trend เป็นมุมมองกราฟของ KPI Summary โดยเฉพาะ -->
+    <record id="action_telematics_dashboard_view_graph" model="ir.actions.act_window.view">
+        <field name="sequence" eval="1"/>
+        <field name="view_mode">graph</field>
+        <field name="view_id" ref="view_telematics_log_graph_score"/>
+        <field name="act_window_id" ref="action_telematics_dashboard"/>
     </record>
 
     <!-- Fuel &amp; Energy Analysis -->
@@ -228,6 +251,29 @@
         <field name="view_mode">graph,pivot,list</field>
         <field name="context">{'search_default_synced': 1}</field>
         <field name="search_view_id" ref="view_telematics_log_search"/>
+    </record>
+    <!-- ผูกกราฟ Fuel &amp; Idle Summary เป็นมุมมองกราฟของ Fuel &amp; Energy Analysis โดยเฉพาะ -->
+    <record id="action_telematics_fuel_summary_view_graph" model="ir.actions.act_window.view">
+        <field name="sequence" eval="1"/>
+        <field name="view_mode">graph</field>
+        <field name="view_id" ref="view_telematics_log_graph_fuel"/>
+        <field name="act_window_id" ref="action_telematics_fuel_summary"/>
+    </record>
+
+    <!-- Driver Score Report (เมนู Reports) — แยกออกจาก Incentive/Bonus
+         เดิม menu นี้ชี้ไป action_telematics_incentive ผิด ตอนนี้ใช้ action นี้แทน -->
+    <record id="action_telematics_driver_score_report" model="ir.actions.act_window">
+        <field name="name">Driver Score Report</field>
+        <field name="res_model">fleet.telematics.log</field>
+        <field name="view_mode">pivot,graph,list</field>
+        <field name="context">{'search_default_synced': 1, 'group_by': 'driver_id'}</field>
+        <field name="search_view_id" ref="view_telematics_log_search"/>
+    </record>
+    <record id="action_telematics_driver_score_report_view_graph" model="ir.actions.act_window.view">
+        <field name="sequence" eval="1"/>
+        <field name="view_mode">graph</field>
+        <field name="view_id" ref="view_telematics_log_graph_score"/>
+        <field name="act_window_id" ref="action_telematics_driver_score_report"/>
     </record>
 
 </odoo>

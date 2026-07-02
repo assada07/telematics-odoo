@@ -141,9 +141,15 @@ class TelematicsScoringConfig(models.Model):
     # ============================================================
     # [I] สร้าง Payload ตาม Backend spec
     # POST http://192.168.1.43:8001/api/v1/config/scoring
+    #
+    # [แก้บั๊ก] เดิมส่ง now_utc (เวลาที่กดปุ่ม sync) ไว้ใต้คีย์
+    # 'synced_from_odoo_at' ทำให้ค่า effective_date ที่ผู้ใช้กรอกในฟอร์ม
+    # ไม่ถูกส่งไป Backend เลย (นี่คือ "ตัวแปรวันที่ที่หายไป" ที่ผู้ควบคุม
+    # แจ้งมา) — Backend มีฟิลด์รองรับค่านี้อยู่แล้วแค่ใช้ชื่อคีย์
+    # 'synced_from_odoo_at' จึงแก้ให้ส่ง self.effective_date (วันที่ config
+    # นี้มีผลบังคับใช้จริง) ไปใต้คีย์นี้แทน
     # ============================================================
     def _build_config_payload(self):
-        now_utc = fields.Datetime.now()
         return {
             'config_name':         self.name,
             'score_base':          self.score_base,
@@ -160,7 +166,9 @@ class TelematicsScoringConfig(models.Model):
             'idle_min_threshold':  self.idle_min_threshold,
             'max_deduct_per_trip': self.max_deduct_per_trip,
             'is_active':           self.active,
-            'synced_from_odoo_at': now_utc.strftime('%Y-%m-%dT%H:%M:%SZ') if now_utc else None,
+            'synced_from_odoo_at': (
+                self.effective_date.isoformat() if self.effective_date else None
+            ),
         }
 
     # ============================================================

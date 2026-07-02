@@ -57,18 +57,19 @@ class TelematicsWebhookController(http.Controller):
         })
 
     # ==========================================================================
-    # GET /fleet_telematics/live_proxy  (เพิ่มใหม่ 2026-06-30 — UC-06)
-    # Proxy เชื่อม GET /api/v1/fleet/live (SSE) ของ Backend ให้ฝั่ง browser
-    # เหตุผลที่ต้อง proxy ผ่าน Odoo แทนให้ browser ยิงตรง:
-    #   1) native EventSource ของ browser ใส่ custom header (APIKEY) ไม่ได้
-    #   2) ไม่อยากฝัง API Key ของ Backend ไว้ใน JS ฝั่ง client โดยตรง
-    # auth='user' ใช้ session login ของ Odoo เอง ส่วน APIKEY ไปต่อกับ Backend
-    # ในชั้น server-side เท่านั้น
+    # GET /fleet_telematics/live_proxy  (UC-06 — SSE Real-time ตาม FDD spec)
     #
-    # ⚠️ ยืนยันจาก Backend (2026-06-30): ไม่มี reverse proxy (nginx) คั่นอยู่เลย
-    # ทั้งฝั่ง Backend และยังไม่มีของฝั่ง Odoo — ถ้า deploy production ผ่าน
-    # nginx/ALB/Cloudflare ต้องตั้ง buffering off + read_timeout ยาวๆ เอง
-    # ดู docs/nginx_fleet_telematics_sse.conf ประกอบ ไม่ต้องรอ config จาก Backend
+    # เปิด EventSource ไปที่ GET /api/v1/fleet/live ของ Backend
+    # แล้ว forward stream มาให้ browser ทุก 5 วินาที
+    #
+    # เหตุผลที่ต้องผ่าน proxy นี้:
+    #   1) native EventSource ของ browser ใส่ custom header (APIKEY) ไม่ได้
+    #   2) ไม่ต้องการ expose API Key ไว้ใน JS ฝั่ง client
+    #
+    # เพิ่ม: enrich vehicle_name และ driver_name จาก Odoo database
+    # เพราะ Backend SSE ส่งมาแค่ vehicle_id/device_id ไม่มีชื่อ
+    #
+    # อ้างอิง nginx config: docs/nginx_fleet_telematics_sse.conf
     # ==========================================================================
     @http.route(
         '/fleet_telematics/live_proxy',
@@ -78,9 +79,10 @@ class TelematicsWebhookController(http.Controller):
         csrf=False,
     )
     def fleet_live_proxy(self, **kwargs):
+        import json as _json
         from odoo.http import Response
 
-        Config = request.env['fleet.telematics.config'].sudo()
+        Config  = request.env['fleet.telematics.config'].sudo()
         api_url = Config.get_active_api_url()
         api_key = Config.get_active_api_key()
 
@@ -90,23 +92,57 @@ class TelematicsWebhookController(http.Controller):
                 mimetype='text/event-stream',
             )
 
+        # lookup table: vehicle_id → {name, driver_name}
+        # ดึง ALL vehicles ไม่กรองแค่ที่มี device
+        # เพราะ SSE อาจส่ง vehicle_id ที่ยังไม่มี device ใน Odoo มาด้วย
+        vehicles = request.env['fleet.vehicle'].sudo().search([])
+        vehicle_info = {
+            v.id: {
+                'vehicle_name': v.display_name or v.name,
+                'driver_name':  v.driver_id.name if v.driver_id else '-',
+            }
+            for v in vehicles
+        }
+
         def generate():
-            import requests as _requests
+            import requests as _req
             try:
-                with _requests.get(
+                with _req.get(
                     f'{api_url}/api/v1/fleet/live',
-                    headers={'APIKEY': api_key, 'Accept': 'text/event-stream'},
+                    headers={
+                        'APIKEY':  api_key,
+                        'Accept':  'text/event-stream',
+                    },
                     stream=True,
                     timeout=120,
                 ) as r:
                     for line in r.iter_lines(decode_unicode=True):
-                        if line:
-                            yield (line + '\n').encode('utf-8')
-                        else:
+                        if not line:
                             yield b'\n'
-            except _requests.RequestException as e:
+                            continue
+
+                        # เพิ่ม vehicle_name / driver_name ก่อนส่งต่อ browser
+                        if line.startswith('data:'):
+                            raw = line[5:].strip()
+                            try:
+                                arr = _json.loads(raw)
+                                if isinstance(arr, list):
+                                    for item in arr:
+                                        vid  = item.get('vehicle_id')
+                                        info = vehicle_info.get(vid, {})
+                                        item['vehicle_name'] = info.get('vehicle_name', f'Vehicle {vid}')
+                                        item['driver_name']  = info.get('driver_name', '-')
+                                    line = 'data: ' + _json.dumps(arr, ensure_ascii=False)
+                            except Exception:
+                                pass  # ถ้า parse ไม่ได้ส่ง raw ไปเลย
+
+                        yield (line + '\n').encode('utf-8')
+
+            except _req.RequestException as e:
                 _logger.warning('fleet_live_proxy: %s', e)
-                yield ('data: {"error": "%s"}\n\n' % str(e).replace('"', "'")).encode('utf-8')
+                yield (
+                    'data: {"error": "%s"}\n\n' % str(e).replace('"', "'")
+                ).encode('utf-8')
 
         return Response(
             generate(),

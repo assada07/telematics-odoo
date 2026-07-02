@@ -47,10 +47,19 @@
                             class="btn-success"   invisible="state != 'approved'"/>
                     <button name="action_reset"     string="Reset"     type="object"
                             class="btn-secondary" invisible="state not in ('confirmed','approved')"/>
+                    <button name="action_refresh_bonus_from_backend" string="Refresh from Backend"
+                            type="object" class="btn-secondary"
+                            invisible="state not in ('draft','confirmed')"
+                            help="ดึง bonus_pct ล่าสุดจาก GET /drivers/{id}/bonus ใหม่"/>
                     <field name="state" widget="statusbar"
                            statusbar_visible="draft,confirmed,approved,paid"/>
                 </header>
                 <sheet>
+                    <div class="alert alert-warning" role="alert"
+                         invisible="bonus_source != 'local_fallback'">
+                        ⚠️ ตัวเลขโบนัสนี้คำนวณจาก Local Fallback เพราะเรียก Backend ไม่สำเร็จ
+                        — กด "Refresh from Backend" อีกครั้งก่อน Approve จริง
+                    </div>
                     <group>
                         <group string="ข้อมูลพนักงาน">
                             <field name="driver_id"/>
@@ -73,6 +82,8 @@
                         <group>
                             <field name="incentive_tier" widget="badge"/>
                             <field name="bonus_pct"/>
+                            <field name="bonus_source" readonly="1"/>
+                            <field name="bonus_last_synced" readonly="1"/>
                         </group>
                         <group>
                             <!-- base_salary ดึงจาก hr.contract (สัญญาจ้าง) -->

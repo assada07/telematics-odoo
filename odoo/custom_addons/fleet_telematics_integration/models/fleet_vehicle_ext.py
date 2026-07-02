@@ -24,6 +24,40 @@ class FleetVehicleExt(models.Model):
         help='รหัสกล่อง GPS เช่น KTC-001 — ต้องตรงกับ device_id ใน Backend'
     )
 
+    # เพิ่ม 2026-06-30: รวมระบบลงทะเบียน Device เข้ามาในหน้ารถโดยตรง
+    # (เดิมแยกเป็นเมนู "Devices" ต่างหาก ทำให้มี 2 ทางผูก Device กับรถพร้อมกัน
+    #  เสี่ยงข้อมูลขัดแย้งกัน — ยุบรวมเหลือทางเดียวที่นี่)
+    telematics_device_name = fields.Char(
+        string='Device Name',
+        help='ชื่อเรียก Device สำหรับแสดงผล (ส่งไป Backend ตอนลงทะเบียนครั้งแรก)'
+    )
+    telematics_register_status = fields.Selection(
+        [('draft', 'ยังไม่ลงทะเบียน'),
+         ('registered', 'ลงทะเบียนแล้ว'),
+         ('error', 'ลงทะเบียนไม่สำเร็จ')],
+        string='สถานะการลงทะเบียน Device',
+        default='draft', readonly=True,
+    )
+    telematics_registered_at = fields.Datetime(
+        string='Registered At (Backend)', readonly=True,
+    )
+    telematics_register_error = fields.Text(string='Register Error', readonly=True)
+
+    # เพิ่ม 2026-06-30: แสดงเลข ID ของคนขับแบบตัวเลขชัดๆ เทียบกับที่ Backend
+    # ใช้เป็น driver_id ในรายงานต่างๆ (เช่น JSON ของ /drivers/{id}/bonus
+    # ที่คืน "driver_id": "12" — เลขนี้คือ id ของ hr.employee ใน Odoo ตรงๆ)
+    driver_backend_id = fields.Integer(
+        string='Driver ID (สำหรับเทียบกับ Backend)',
+        compute='_compute_driver_backend_id',
+        help='เลข ID ของพนักงานคนขับใน Odoo — ตรงกับค่า driver_id ที่ Backend '
+             'ใช้อ้างอิงในรายงานต่างๆ (Driver Score, Bonus, Fuel Summary)'
+    )
+
+    @api.depends('driver_id')
+    def _compute_driver_backend_id(self):
+        for rec in self:
+            rec.driver_backend_id = rec.driver_id.id if rec.driver_id else 0
+
     # จดจำบอร์ดเดิมอัตโนมัติผ่าน write() hook
     # ใช้เป็น old_device_id เมื่อยิง PUT /api/v1/config/vehicle
     previous_device_id = fields.Char(
@@ -76,6 +110,77 @@ class FleetVehicleExt(models.Model):
                 'ไปที่ Fleet Telematics → Settings แล้วกรอก API URL'
             )
         return api_url, api_key
+
+    # ============================================================
+    # [C2] ลงทะเบียน Device ครั้งแรกกับ Backend — รวมเข้ามาจากเมนู
+    # "Devices" เดิม (POST /config_device/register) ให้กรอก/กดได้
+    # จากหน้ารถโดยตรง ไม่ต้องสลับไปอีกเมนู
+    #
+    # ใช้คู่กับ action_sync_to_backend() (PUT /config/vehicle) ที่มีอยู่เดิม:
+    #   - ครั้งแรกที่ Device ยังไม่เคยลงทะเบียนเลย → ใช้ปุ่มนี้ (Register)
+    #   - หลังจากนั้นถ้าจะ "ย้าย" Device ไปผูกรถคันอื่น/เปลี่ยนบอร์ด
+    #     → ใช้ action_sync_to_backend() (Push to Backend) ตามเดิม
+    # ============================================================
+    def action_register_device(self):
+        self.ensure_one()
+        if not self.telematics_device_id:
+            raise UserError('กรุณากรอก GPS Device ID ก่อน (รูปแบบ KTC-XXX)')
+        if not self.telematics_device_name:
+            raise UserError('กรุณากรอก Device Name ก่อน')
+
+        api_url, api_key = self._get_api_credentials()
+
+        payload = {
+            'device_id': self.telematics_device_id.upper(),
+            'device_name': self.telematics_device_name,
+            'vehicle_id': self.id,
+        }
+
+        try:
+            resp = requests.post(
+                f'{api_url}/api/v1/config_device/register',
+                json=payload,
+                headers={'APIKEY': api_key},
+                timeout=15,
+            )
+        except requests.RequestException as e:
+            self.write({
+                'telematics_register_status': 'error',
+                'telematics_register_error': str(e),
+            })
+            raise UserError(f'เชื่อมต่อ Backend ไม่สำเร็จ: {e}')
+
+        if resp.status_code == 201:
+            data = resp.json()
+            self.write({
+                'telematics_register_status': 'registered',
+                'telematics_registered_at': data.get('registered_at') and
+                    data['registered_at'].replace('T', ' ')[:19],
+                'telematics_register_error': False,
+                'previous_device_id': self.telematics_device_id,
+            })
+            return True
+
+        if resp.status_code == 409:
+            try:
+                msg = resp.json().get('message', 'Device/Vehicle ถูกผูกไว้แล้ว')
+            except ValueError:
+                msg = 'Device/Vehicle ถูกผูกไว้แล้ว'
+            self.write({
+                'telematics_register_status': 'error',
+                'telematics_register_error': msg,
+            })
+            raise UserError(
+                f'ไม่สามารถลงทะเบียนได้ (409): {msg}\n'
+                'ถ้า Device นี้เคยลงทะเบียนกับรถคันอื่นมาก่อน ให้ใช้ปุ่ม '
+                '"Push to Backend" แทน (จะยิง PUT /config/vehicle เพื่อย้ายการผูกแทน)'
+            )
+
+        self.write({
+            'telematics_register_status': 'error',
+            'telematics_register_error': resp.text[:500],
+        })
+        raise UserError(f'Backend ตอบกลับผิดพลาด (HTTP {resp.status_code}): {resp.text[:300]}')
 
     # ============================================================
     # [D] ดักรถ/บอร์ดซ้ำ — Validation ฝั่ง Python
@@ -137,8 +242,14 @@ class FleetVehicleExt(models.Model):
     # ============================================================
     # [F] action_sync_to_backend — PUT /api/v1/config/vehicle
     #
-    # Payload สเปก Backend:
-    #   { "vehicle_id": int, "new_device_id": str, "old_device_id": str|None }
+    # Payload สเปก Backend (ยืนยันจาก Swagger 2026-06-30):
+    #   { "vehicle_id": int, "new_device_id": str, "old_device_id": str|None,
+    #     "driver_id": int }
+    #
+    # เพิ่ม driver_id เข้า payload — เดิมไม่เคยส่งฟิลด์นี้เลยทั้งที่ Backend
+    # รองรับอยู่แล้ว ทำให้ Backend ไม่รู้ว่ารถคันนี้มีคนขับคนไหนผูกอยู่
+    # ใช้ self.driver_id (field มาตรฐานของ fleet.vehicle) — ถ้าไม่มีคนขับ
+    # ผูกอยู่ ส่งเป็น 0 ตามตัวอย่าง schema ของ Backend (ไม่ใช่ null)
     #
     # หลัง PUT 200: อัปเดต previous_device_id = telematics_device_id ทันที
     # เพื่อให้พร้อมสำหรับการเปลี่ยนบอร์ดครั้งถัดไป
@@ -159,6 +270,7 @@ class FleetVehicleExt(models.Model):
             'vehicle_id':    int(self.id),
             'new_device_id': new_device,
             'old_device_id': old_device,   # None หรือ str
+            'driver_id':     self.driver_id.id if self.driver_id else 0,
         }
 
         _logger.info(
@@ -302,3 +414,53 @@ class FleetVehicleExt(models.Model):
                 'sticky': True,
             },
         }
+
+    # ============================================================
+    # [H] get_trip_history — GET /api/v1/vehicles/{device_id}/trips
+    #
+    # Helper เปล่า ๆ ไว้ให้ส่วนอื่นในโมดูล (หรือโมดูลอื่น) เรียกใช้ —
+    # ยังไม่มีปุ่ม/หน้าจอ UI ผูกไว้ ตามที่ระบุไว้
+    #
+    # คืนค่า: list ของ trip dict ตามที่ Backend ส่งมา (ประวัติ Trip ทั้งหมด
+    # ของรถคันนี้ ไม่ได้กรองว่า sync เข้า Odoo แล้วหรือยัง — ต่างจาก
+    # /api/v1/trips/unsynced ที่ใช้ใน cron sync ทุก 5 นาที)
+    #
+    # ออกแบบให้:
+    #   - ไม่ raise UserError ถ้าไม่มี telematics_device_id — แค่ log
+    #     warning แล้วคืน [] เพราะ helper นี้อาจถูกเรียกวนหลายคันพร้อมกัน
+    #     จาก caller อื่น ไม่ควรให้คันใดคันหนึ่งที่ยังไม่ผูก device
+    #     ทำให้ทั้ง batch พัง
+    #   - requests.RequestException ปล่อยให้ลอยขึ้นไปให้ caller จัดการเอง
+    #     (เช่นเดียวกับ pattern ใน fleet.telematics.log._fetch_unsynced_trips)
+    #     — caller จะ try/except แล้วตัดสินใจว่าจะ retry/log/แจ้ง error ยังไง
+    #   - รองรับ response ทั้งแบบ list ตรง ๆ และแบบห่อด้วย key (เช่น
+    #     {"trips": [...]}) เพราะยังไม่มีตัวอย่าง response จริงของ
+    #     endpoint นี้ — ถ้าได้ตัวอย่างจริงมาแล้วรูปแบบไม่ตรง ปรับโค้ด
+    #     ส่วน parse response ด้านล่างได้เลย
+    # ============================================================
+    def get_trip_history(self):
+        self.ensure_one()
+
+        if not self.telematics_device_id:
+            _logger.warning(
+                'get_trip_history: vehicle_id=%s (%s) ไม่มี telematics_device_id — คืน []',
+                self.id, self.name,
+            )
+            return []
+
+        api_url, api_key = self._get_api_credentials()
+        url = f'{api_url}/api/v1/vehicles/{self.telematics_device_id}/trips'
+
+        _logger.info('get_trip_history: GET %s', url)
+
+        resp = requests.get(
+            url,
+            headers={'APIKEY': api_key} if api_key else {},
+            timeout=30,
+        )
+        resp.raise_for_status()
+
+        data = resp.json()
+        if isinstance(data, list):
+            return data
+        return data.get('trips') or data.get('data') or []
