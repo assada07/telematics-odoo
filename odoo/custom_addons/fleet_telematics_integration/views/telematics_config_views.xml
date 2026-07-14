@@ -42,6 +42,9 @@
                         </group>
                     </group>
 
+                    <!-- Device Reconciliation Result (เพิ่มใหม่) -->
+
+
                     <!-- [แก้ไข] เหลือช่องเดียวสำหรับ API URL Backend -->
                     <group string="⚙️ ตั้งค่า Backend API URL">
                         <field name="name" invisible="1"/>

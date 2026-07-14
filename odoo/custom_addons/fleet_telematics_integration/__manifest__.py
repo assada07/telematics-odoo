@@ -14,6 +14,8 @@
         'fleet',
         'hr',
         'web',
+        'mail',     # เพิ่ม 2026-07-06 — UC-10 Audit Log (mail.thread บน Incentive)
+        'portal',   # เพิ่ม 2026-07-06 — UC-11 Self-service ผ่าน Odoo Portal
     ],
 
     # controllers/ ไม่ต้องระบุใน data — Odoo โหลดอัตโนมัติผ่าน __init__.py
@@ -31,7 +33,13 @@
         'views/telematics_config_views.xml',
         'views/fleet_vehicle_ext_views.xml',
         'views/telematics_device_views.xml',  # UC-01 Device Register (เพิ่มใหม่)
-        'views/telematics_report_views.xml',  # UC-07/08 Backend Report Wizard (เพิ่มใหม่)
+        'views/telematics_report_views.xml',  # UC-07/08 Backend Report Wizard (เดิม)
+        'views/telematics_backend_report_views.xml',  # Backend Reports ครบทุก API
+        'views/telematics_vehicle_trip_views.xml',  # Vehicle Trip History wizard
+
+        # 3b. QWeb PDF Reports (FDD §12.6)
+        'reports/energy_report.xml',        # Energy/Fuel Efficiency PDF
+        'reports/driver_score_report.xml',  # Monthly Score & Bonus PDF
         'views/telematics_log_views.xml',
         'views/telematics_event_views.xml',
         'views/telematics_scoring_views.xml',
@@ -40,6 +48,9 @@
 
         # 4. Menu — แถบเมนูหลักและเมนูย่อย
         'views/telematics_menus.xml',
+
+        # 5. Portal — พนักงานดูคะแนน/โบนัสตนเอง (UC-11, FDD §2.3 Self-service)
+        'views/portal_templates.xml',
     ],
 
     'installable': True,
@@ -51,6 +62,10 @@
         'web.assets_backend': [
             'fleet_telematics_integration/static/src/js/fleet_live_map.js',
             'fleet_telematics_integration/static/src/xml/fleet_live_map.xml',
+            'fleet_telematics_integration/static/src/js/trip_map_widget.js',
+            'fleet_telematics_integration/static/src/xml/trip_map_widget.xml',
+            'fleet_telematics_integration/static/src/js/driver_dashboard.js',
+            'fleet_telematics_integration/static/src/xml/driver_dashboard.xml',
         ],
     },
 

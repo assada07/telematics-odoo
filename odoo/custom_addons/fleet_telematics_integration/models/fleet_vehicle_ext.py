@@ -66,6 +66,28 @@ class FleetVehicleExt(models.Model):
         help='รหัสบอร์ดก่อนการเปลี่ยนครั้งล่าสุด — ระบบบันทึกอัตโนมัติ'
     )
 
+    # ============================================================
+    # [A2] เพิ่มใหม่ — Verify Device (GET /api/v1/vehicles/{id}/device)
+    #   เดิม endpoint นี้มีอยู่ใน Swagger ของ Backend แต่ไม่เคยถูกเรียกใช้
+    #   เลยสักที่ในโมดูล ทำให้ Odoo ไม่เคยตรวจสอบว่า device ที่ผูกไว้ใน
+    #   Odoo (telematics_device_id) ตรงกับที่ Backend บันทึกจริงหรือไม่
+    #   → เพิ่มปุ่ม "ตรวจสอบ Device" ให้เทียบสดเป็นรายคัน
+    # ============================================================
+    device_verified_at = fields.Datetime(
+        string='Device Verified At',
+        readonly=True,
+        help='เวลาที่ตรวจสอบข้อมูล Device กับ Backend ล่าสุด (GET /vehicles/{id}/device)'
+    )
+    device_verify_mismatch = fields.Boolean(
+        string='Device Mismatch',
+        readonly=True,
+        help='True ถ้า device_id ที่ Backend บันทึกไว้ไม่ตรงกับ Odoo',
+    )
+    device_verify_note = fields.Text(
+        string='Device Verify Note',
+        readonly=True,
+    )
+
     last_lat      = fields.Float(string='Last Latitude',        digits=(10, 7))
     last_lon      = fields.Float(string='Last Longitude',       digits=(10, 7))
     last_seen     = fields.Datetime(string='Last GPS Update')
@@ -92,6 +114,14 @@ class FleetVehicleExt(models.Model):
     total_trips        = fields.Integer(string='Total Trips',        default=0)
     total_distance_km  = fields.Float(string='Total Distance (km)',  digits=(10, 2), default=0.0)
     avg_driver_score   = fields.Float(string='Avg Driver Score',     digits=(5,  2), default=0.0)
+    # เพิ่ม 2026-07-12 (พบ gap ตอนตรวจสอบตาม FDD §2.2): FDD ระบุ trigger
+    # ซ่อมบำรุง 3 รูปแบบ (ระยะทาง / ชั่วโมงเดินเครื่อง / ช่วงเวลา) แต่โค้ดเดิม
+    # ทำแค่ 2 แบบ (ระยะทาง+ช่วงเวลา) — ไม่เคยสะสมชั่วโมงเดินเครื่องเลย ทั้งที่
+    # มี duration_min ต่อทริปอยู่แล้วในโมเดล fleet.telematics.log
+    telematics_engine_hours = fields.Float(
+        string='Engine Hours (สะสม)', digits=(10, 2), default=0.0,
+        help='ชั่วโมงเดินเครื่องสะสม รวมจาก duration_min ของทุกทริปที่ sync แล้ว '
+             '— ใช้เป็น Trigger ที่ 2 ของการแจ้งเตือนซ่อมบำรุง (FDD §2.2)')
     telematics_log_ids = fields.One2many(
         'fleet.telematics.log', 'vehicle_id', string='Trip Logs'
     )
@@ -416,51 +446,163 @@ class FleetVehicleExt(models.Model):
         }
 
     # ============================================================
-    # [H] get_trip_history — GET /api/v1/vehicles/{device_id}/trips
-    #
-    # Helper เปล่า ๆ ไว้ให้ส่วนอื่นในโมดูล (หรือโมดูลอื่น) เรียกใช้ —
-    # ยังไม่มีปุ่ม/หน้าจอ UI ผูกไว้ ตามที่ระบุไว้
-    #
-    # คืนค่า: list ของ trip dict ตามที่ Backend ส่งมา (ประวัติ Trip ทั้งหมด
-    # ของรถคันนี้ ไม่ได้กรองว่า sync เข้า Odoo แล้วหรือยัง — ต่างจาก
-    # /api/v1/trips/unsynced ที่ใช้ใน cron sync ทุก 5 นาที)
-    #
-    # ออกแบบให้:
-    #   - ไม่ raise UserError ถ้าไม่มี telematics_device_id — แค่ log
-    #     warning แล้วคืน [] เพราะ helper นี้อาจถูกเรียกวนหลายคันพร้อมกัน
-    #     จาก caller อื่น ไม่ควรให้คันใดคันหนึ่งที่ยังไม่ผูก device
-    #     ทำให้ทั้ง batch พัง
-    #   - requests.RequestException ปล่อยให้ลอยขึ้นไปให้ caller จัดการเอง
-    #     (เช่นเดียวกับ pattern ใน fleet.telematics.log._fetch_unsynced_trips)
-    #     — caller จะ try/except แล้วตัดสินใจว่าจะ retry/log/แจ้ง error ยังไง
-    #   - รองรับ response ทั้งแบบ list ตรง ๆ และแบบห่อด้วย key (เช่น
-    #     {"trips": [...]}) เพราะยังไม่มีตัวอย่าง response จริงของ
-    #     endpoint นี้ — ถ้าได้ตัวอย่างจริงมาแล้วรูปแบบไม่ตรง ปรับโค้ด
-    #     ส่วน parse response ด้านล่างได้เลย
+    # [G2] action_verify_device — GET /api/v1/vehicles/{vehicle_id}/device
+    #   (เพิ่มใหม่ — endpoint นี้มีใน Swagger Backend อยู่แล้วแต่ Odoo
+    #    ไม่เคยเรียกใช้เลย — ใช้ตรวจว่า device_id ที่ Backend ผูกกับรถคันนี้
+    #    จริง ตรงกับ telematics_device_id ที่บันทึกไว้ใน Odoo หรือไม่
+    #    ต่างจาก action_check_vehicle_status (ดึงพิกัด/ความเร็ว real-time)
+    #    ตัวนี้เช็คเฉพาะ "ความถูกต้องของการผูก device" เท่านั้น)
     # ============================================================
-    def get_trip_history(self):
+    def action_verify_device(self):
         self.ensure_one()
 
-        if not self.telematics_device_id:
-            _logger.warning(
-                'get_trip_history: vehicle_id=%s (%s) ไม่มี telematics_device_id — คืน []',
-                self.id, self.name,
+        api_url, api_key = self._get_api_credentials()
+
+        try:
+            resp = requests.get(
+                f'{api_url}/api/v1/vehicles/{self.id}/device',
+                headers={'APIKEY': api_key},
+                timeout=10,
             )
-            return []
+        except requests.RequestException as e:
+            self.write({
+                'device_verified_at':     fields.Datetime.now(),
+                'device_verify_mismatch': True,
+                'device_verify_note':     f'เรียก Backend ไม่สำเร็จ: {e}',
+            })
+            raise UserError(f'ตรวจสอบ Device ไม่สำเร็จ — เรียก Backend ไม่ได้:\n{e}')
+
+        if resp.status_code == 404:
+            # Backend ไม่รู้จักรถคันนี้เลย (ยังไม่เคย register หรือถูกลบไปแล้ว)
+            mismatch = bool(self.telematics_device_id)
+            note = (
+                'Backend ไม่มีข้อมูล Device ผูกกับรถคันนี้ '
+                f'(Odoo บันทึกไว้ว่า: {self.telematics_device_id or "-"})'
+            )
+            self.write({
+                'device_verified_at':     fields.Datetime.now(),
+                'device_verify_mismatch': mismatch,
+                'device_verify_note':     note,
+            })
+            raise UserError(f'⚠️ {note}')
+
+        resp.raise_for_status()
+        data = resp.json()
+
+        backend_device_id = (data.get('device_id') or '').strip()
+        odoo_device_id     = (self.telematics_device_id or '').strip()
+        mismatch = backend_device_id.upper() != odoo_device_id.upper()
+
+        last_update = data.get('date_update_latest') or data.get('registered_at')
+
+        note = (
+            f'Odoo: {odoo_device_id or "-"}  |  Backend: {backend_device_id or "-"}'
+            + (f'  |  อัปเดตล่าสุด (Backend): {last_update}' if last_update else '')
+        )
+
+        self.write({
+            'device_verified_at':     fields.Datetime.now(),
+            'device_verify_mismatch': mismatch,
+            'device_verify_note':     note,
+        })
+
+        _logger.info(
+            'action_verify_device: vehicle_id=%s odoo=%s backend=%s mismatch=%s',
+            self.id, odoo_device_id, backend_device_id, mismatch,
+        )
+
+        return {
+            'type': 'ir.actions.client',
+            'tag':  'display_notification',
+            'params': {
+                'title':   '⚠️ Device ไม่ตรงกัน!' if mismatch else '✅ Device ตรงกัน',
+                'message': note,
+                'type':    'danger' if mismatch else 'success',
+                'sticky':  mismatch,
+            },
+        }
+
+    # ============================================================
+    # ============================================================
+    # [H] get_trip_history — GET /api/v1/vehicles/{vehicle_id}/trips
+    #
+    # ยืนยันจาก Swagger (2026-07-02):
+    #   - Path param: vehicle_id (integer) = Odoo record ID ของรถ
+    #     ไม่ใช่ device_id (KTC-XXX) — แก้จากเดิมที่ใช้ telematics_device_id
+    #   - Query params: page, limit (max 200), date_from, date_to (ISO8601), synced_only (bool)
+    #   - Response: {total, page, limit, total_pages, trips: [...]}
+    # ============================================================
+    def get_trip_history(self, page=1, limit=20,
+                         date_from=None, date_to=None, synced_only=None):
+        self.ensure_one()
 
         api_url, api_key = self._get_api_credentials()
-        url = f'{api_url}/api/v1/vehicles/{self.telematics_device_id}/trips'
 
-        _logger.info('get_trip_history: GET %s', url)
+        # Path param คือ Odoo vehicle.id (int) ยืนยันจาก Swagger
+        url = f'{api_url}/api/v1/vehicles/{self.id}/trips'
+
+        params = {'page': page, 'limit': min(limit, 200)}
+        if date_from:
+            params['date_from'] = date_from
+        if date_to:
+            params['date_to'] = date_to
+        if synced_only is not None:
+            params['synced_only'] = 'true' if synced_only else 'false'
+
+        _logger.info('get_trip_history: GET %s params=%s', url, params)
 
         resp = requests.get(
             url,
             headers={'APIKEY': api_key} if api_key else {},
+            params=params,
             timeout=30,
         )
         resp.raise_for_status()
 
         data = resp.json()
         if isinstance(data, list):
-            return data
-        return data.get('trips') or data.get('data') or []
+            return {'trips': data, 'total': len(data)}
+        return data  # คืน dict เต็ม {total, page, limit, total_pages, trips}
+
+    def action_view_vehicle_trips(self):
+        """ปุ่มดู Trip History จาก Backend ในแท็บ Telematics Settings
+        เรียก GET /vehicles/{id}/trips — vehicle_id คือ Odoo ID (int)
+        รองรับ query params ตาม Swagger: page, limit, date_from, date_to, synced_only"""
+        self.ensure_one()
+        try:
+            result = self.get_trip_history(limit=20, synced_only=False)
+            trips  = result.get('trips', []) if isinstance(result, dict) else result
+            total  = result.get('total', len(trips)) if isinstance(result, dict) else len(trips)
+            pages  = result.get('total_pages', 1) if isinstance(result, dict) else 1
+            return {
+                'type':   'ir.actions.client',
+                'tag':    'display_notification',
+                'params': {
+                    'title':   f'Trip History (Backend) — {self.name}',
+                    'message': (
+                        f'Backend มี {total} ทริป ({pages} หน้า)\n'
+                        f'แสดง {len(trips)} รายการแรก\n'
+                        f'ดูรายละเอียดครบที่เมนู Trip Logs'
+                    ),
+                    'type': 'info',
+                },
+            }
+        except Exception as e:
+            raise UserError(f'ดึงประวัติ trip ไม่สำเร็จ: {e}')
+
+
+# ==============================================================================
+# เพิ่ม 2026-07-12 — extend fleet.vehicle.log.services (core Odoo model)
+#
+# เพิ่ม field engine_hours_at_service เพื่อบันทึก snapshot ของชั่วโมงเดินเครื่อง
+# สะสม ณ ตอนที่ทำ service แต่ละครั้ง — ใช้เป็นจุดอ้างอิงเทียบ Trigger 2
+# (ชั่วโมงเดินเครื่อง) ของการแจ้งเตือนซ่อมบำรุงครั้งถัดไป (ดู
+# models/telematics_log.py: _update_odometer_and_check_maintenance)
+# ==============================================================================
+class FleetVehicleLogServicesExt(models.Model):
+    _inherit = 'fleet.vehicle.log.services'
+
+    engine_hours_at_service = fields.Float(
+        string='Engine Hours (ตอน Service)', digits=(10, 2),
+        help='ชั่วโมงเดินเครื่องสะสมของรถคันนี้ ณ ตอนที่ทำ service ครั้งนี้ '
+             '— ใช้เทียบ Trigger ชั่วโมงเดินเครื่องของรอบซ่อมบำรุงถัดไป')

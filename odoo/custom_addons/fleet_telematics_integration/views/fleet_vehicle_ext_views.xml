@@ -34,6 +34,14 @@
                         class="btn-secondary"
                         invisible="not telematics_device_id"/>
 
+                <!-- ตรวจสอบว่า Device ที่ผูกใน Odoo ตรงกับ Backend จริงไหม
+                     (GET /api/v1/vehicles/{id}/device — เพิ่มใหม่) -->
+                <button name="action_verify_device"
+                        string="🔍 ตรวจสอบ Device"
+                        type="object"
+                        class="btn-secondary"
+                        invisible="not telematics_device_id"/>
+
                 <!-- ส่งรถ + บอร์ดไปยัง Backend ทันที (ใช้ตอน Device ลงทะเบียนแล้ว
                      แต่ต้องการย้าย/อัปเดตการผูกกับรถคันนี้) -->
                 <button name="action_sync_to_backend"
@@ -80,6 +88,18 @@
                         ❌ ลงทะเบียนไม่สำเร็จ: <field name="telematics_register_error" readonly="1" nolabel="1"/>
                     </div>
 
+                    <!-- ผลตรวจสอบ Device ล่าสุด (action_verify_device) -->
+                    <div class="alert alert-danger mb-3" role="alert"
+                         invisible="not device_verify_mismatch">
+                        🔍 <strong>Device ไม่ตรงกับ Backend!</strong>
+                        <field name="device_verify_note" readonly="1" nolabel="1"/>
+                    </div>
+                    <div class="alert alert-success mb-3" role="alert"
+                         invisible="not device_verified_at or device_verify_mismatch">
+                        🔍 ตรวจสอบ Device ล่าสุดแล้ว — ตรงกับ Backend ✅
+                        (<field name="device_verified_at" readonly="1" nolabel="1"/>)
+                    </div>
+
                     <group>
                         <group string="อุปกรณ์ GPS">
                             <field name="telematics_device_id"
@@ -109,17 +129,26 @@
                             <field name="sync_status" readonly="1"/>
                         </group>
                         <group string="สรุปสถิติ">
-                            <field name="total_trips"/>
-                            <field name="total_distance_km"/>
-                            <field name="avg_driver_score"/>
-                            <field name="last_lat" readonly="1"/>
-                            <field name="last_lon" readonly="1"/>
+                            <!-- แก้ 2026-07-12: field กลุ่มนี้เป็น field ธรรมดา (ไม่ใช่
+                                 compute) จึงยังพิมพ์แก้เองได้ตรงๆ ทั้งที่ควรดึงจาก
+                                 Backend อัตโนมัติเท่านั้น ("ค่าสถิติและระยะทางควรดึงมา
+                                 อัตโนมัติและแก้ไขไม่ได้") ล็อก readonly="1" ให้ครบ
+                                 + จัดชิดขวาตามมาตรฐาน UI ของ Odoo สำหรับข้อมูลตัวเลข -->
+                            <field name="total_trips" readonly="1" class="text-end"/>
+                            <field name="total_distance_km" readonly="1" class="text-end"/>
+                            <field name="avg_driver_score" readonly="1" class="text-end"/>
+                            <field name="last_lat" readonly="1" class="text-end"/>
+                            <field name="last_lon" readonly="1" class="text-end"/>
                         </group>
                     </group>
 
                     <!-- ประวัติ Trip -->
+                    <!-- แก้ 2026-07-12: เดิมกดปุ่ม "เพิ่มรายการ" สร้างทริปเองในตารางนี้
+                         ได้ตรงๆ ทั้งที่ควรถูกดึงมาจาก Backend อัตโนมัติทุกวันเท่านั้น
+                         ปิด create/edit/delete ระดับ list ป้องกันการคีย์ข้อมูลมือ -->
                     <field name="telematics_log_ids">
-                        <list default_order="trip_start desc">
+                        <list default_order="trip_start desc"
+                              create="0" edit="0" delete="0">
                             <field name="trip_start"/>
                             <field name="driver_id"/>
                             <field name="distance_km"/>

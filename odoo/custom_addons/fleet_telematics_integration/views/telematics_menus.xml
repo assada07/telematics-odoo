@@ -52,11 +52,11 @@
               parent="menu_fleet_telematics_root"
               sequence="10"/>
 
-    <!-- KPI Summary: จำนวนทริป, คะแนนเฉลี่ย, พฤติกรรมเสี่ยง -->
+    <!-- KPI Summary → Driver Dashboard OWL (FDD §12.6) -->
     <menuitem id="menu_telematics_dashboard_kpi"
               name="KPI Summary"
               parent="menu_telematics_dashboard"
-              action="action_telematics_dashboard"
+              action="action_telematics_driver_dashboard"
               sequence="10"/>
 
     <!-- Fuel &amp; Energy Analysis: Fuel Usage, Fuel/km, Idle Time -->
@@ -98,6 +98,13 @@
               parent="menu_telematics_trip_logs"
               action="action_telematics_log"
               sequence="10"/>
+
+    <!-- Vehicle Trip History — ดึงสดจาก Backend GET /vehicles/{id}/trips -->
+    <menuitem id="menu_telematics_vehicle_trip_history"
+              name="Vehicle Trip History"
+              parent="menu_telematics_trip_logs"
+              action="action_telematics_vehicle_trip_history"
+              sequence="15"/>
 
     <!-- Trip Analytics — Graph + Pivot -->
     <menuitem id="menu_telematics_trip_analytics"
@@ -152,28 +159,28 @@
     <menuitem id="menu_telematics_report_fuel"
               name="Fuel Efficiency Report"
               parent="menu_telematics_reports"
-              action="action_telematics_fuel_summary"
+              action="action_telematics_report_fuel_efficiency"
               sequence="20"/>
 
     <!-- Fleet Summary -->
     <menuitem id="menu_telematics_report_fleet_summary"
               name="Fleet Summary"
               parent="menu_telematics_reports"
-              action="action_telematics_analytics"
+              action="action_telematics_report_fleet_summary"
               sequence="30"/>
 
     <!-- Incentive Summary -->
     <menuitem id="menu_telematics_report_incentive"
               name="Incentive Summary"
               parent="menu_telematics_reports"
-              action="action_telematics_incentive_summary"
+              action="action_telematics_report_incentive_summary"
               sequence="40"/>
 
-    <!-- Fuel &amp; Score Report — ดึงตรงจาก Backend (เพิ่มใหม่ UC-07/08) -->
+    <!-- Fuel &amp; Score Report — รวม wizard ใหม่ที่ครอบคลุมทุก endpoint -->
     <menuitem id="menu_telematics_report_backend_live"
-              name="Fuel &amp; Score Report (Backend สด)"
+              name="Backend Reports (ข้อมูลสด)"
               parent="menu_telematics_reports"
-              action="action_telematics_fuel_report_wizard"
+              action="action_telematics_backend_report"
               sequence="50"/>
 
     <!-- Payload Inbox — ปิดเมนูแล้ว (2026-07-01)

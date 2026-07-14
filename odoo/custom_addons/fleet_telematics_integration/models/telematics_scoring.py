@@ -17,8 +17,9 @@ class TelematicsScoringConfig(models.Model):
 
     # [A] ข้อมูลระบุ Config
     name           = fields.Char(string='Config Name', required=True)
-    active         = fields.Boolean(string='Active', default=True,
-        help='Active ได้เพียง 1 config เท่านั้น')
+    active         = fields.Boolean(string='Active', default=False,
+        help='Active ได้เพียง 1 config เท่านั้น — ตอนสร้างใหม่ต้องปิดไว้ก่อน '
+             'เพื่อให้กรอกข้อมูลและทดสอบ Push ได้ก่อนเปิดใช้งานจริง')
     effective_date = fields.Date(string='Effective Date', required=True)
 
     # [B] คะแนนพื้นฐาน
@@ -40,6 +41,18 @@ class TelematicsScoringConfig(models.Model):
     speeding_kmh_over  = fields.Float(string='Speeding (km/h เกินกำหนด)', default=20.0)
     idle_min_threshold = fields.Float(string='Idle Min Threshold (min)',   default=5.0)
 
+    # [D2] เพิ่ม 2026-07-08 — ตามบรีฟ: กฎจำกัดความเร็วแยกโซน (กทม./นอกเมือง)
+    # ส่งค่าชุดนี้ไปพร้อม Push Config เพื่อให้ Event Processor ฝั่ง Backend
+    # ใช้ตัดสินว่า event ไหน "speeding" ตามโซนที่รถวิ่งอยู่จริง — ทำงานคู่กับ
+    # zone_label/speed_limit_kmh ที่คำนวณไว้แล้วบน fleet.telematics.event
+    # (models/telematics_event.py) ฝั่ง Odoo เพื่อ cross-check/audit ย้อนหลัง
+    speed_limit_bkk = fields.Float(
+        string='ความเร็วจำกัดในกรุงเทพฯ (km/h)', default=80.0,
+        help='ใช้กับ event ที่พิกัดอยู่ในเขตกรุงเทพฯ')
+    speed_limit_upcountry = fields.Float(
+        string='ความเร็วจำกัดนอกเมือง (km/h)', default=90.0,
+        help='ใช้กับ event ที่พิกัดอยู่นอกเขตกรุงเทพฯ')
+
     # [E] Tier
     tier_a_min_score = fields.Float(string='Tier A — Min Score', default=90.0)
     tier_a_bonus_pct = fields.Float(string='Tier A — Bonus %',  default=10.0)
@@ -51,6 +64,31 @@ class TelematicsScoringConfig(models.Model):
     # [F] สถานะ Push
     last_push_at     = fields.Datetime(string='Last Pushed At', readonly=True)
     last_push_status = fields.Char(string='Push Status',        readonly=True)
+
+    # [F2] เพิ่ม 2026-07-08 — ผู้อนุมัติเกณฑ์คะแนน (ตามบรีฟข้อ "กำหนดผู้อนุมัติ")
+    # ต้องอนุมัติก่อนถึงจะกด Push Config ไป Backend ได้จริง (บังคับใน
+    # action_push_to_backend ด้านล่าง) — เขียนได้เฉพาะกลุ่ม Fleet Manager
+    approved_by_id = fields.Many2one(
+        'res.users', string='ผู้อนุมัติ', readonly=True,
+        help='ผู้มีอำนาจอนุมัติเกณฑ์คะแนนชุดนี้ก่อนนำไปใช้จริง')
+    approved_at = fields.Datetime(string='วันที่อนุมัติ', readonly=True)
+
+    # [F3] ล็อกฟอร์มอัตโนมัติเมื่อ Active หรือเคย Push แล้ว (ตามบรีฟข้อ 3)
+    # [F3] ล็อกฟอร์มอัตโนมัติเมื่อ Active เท่านั้น (แก้ 2026-07-09 ตามบรีฟใหม่)
+    # เดิมล็อกด้วย active OR last_push_at ทำให้แก้ไขไม่ได้ตลอดไปหลัง Push
+    # ครั้งแรกแม้จะปิด Active แล้วก็ตาม — ผิดจากที่ต้องการ (บรีฟระบุชัดว่า
+    # "ตราบใดที่ Active ยังเป็น False ต้องปล่อยให้ Fleet Manager แก้ไขค่าเกณฑ์
+    # และกด Push อัปเดตไปหลังบ้านได้เรื่อยๆ") จึงตัด last_push_at ออกจาก
+    # เงื่อนไขล็อก เหลือแค่ active เพียงอย่างเดียว
+    is_locked = fields.Boolean(
+        string='ล็อกการแก้ไข', compute='_compute_is_locked',
+        help='True เมื่อ Active=True เท่านั้น — ฟิลด์เกณฑ์ทั้งหมดจะแก้ไขไม่ได้ '
+             'จนกว่าจะปิด Active (ตอน Active=False แก้ไข/Push ซ้ำได้เรื่อยๆ)')
+
+    @api.depends('active')
+    def _compute_is_locked(self):
+        for rec in self:
+            rec.is_locked = bool(rec.active)
 
     # ============================================================
     # [G] Constraints
@@ -109,6 +147,17 @@ class TelematicsScoringConfig(models.Model):
                 if getattr(rec, field_name, 0) <= 0:
                     raise ValidationError(f'{label} ต้องมากกว่า 0 (ค่าที่กรอก: {getattr(rec, field_name)})')
 
+    @api.constrains('speed_limit_bkk', 'speed_limit_upcountry')
+    def _check_speed_limit_zone(self):
+        for rec in self:
+            if rec.speed_limit_bkk <= 0 or rec.speed_limit_upcountry <= 0:
+                raise ValidationError('ความเร็วจำกัดตามโซน (กรุงเทพฯ/นอกเมือง) ต้องมากกว่า 0')
+            if rec.speed_limit_bkk > rec.speed_limit_upcountry:
+                raise ValidationError(
+                    f'ความเร็วจำกัดในกรุงเทพฯ ({rec.speed_limit_bkk}) ไม่ควรสูงกว่า '
+                    f'นอกเมือง ({rec.speed_limit_upcountry}) — ตรวจค่าที่กรอกอีกครั้ง'
+                )
+
     @api.constrains('score_base', 'max_deduct_per_trip')
     def _check_max_deduct_not_exceed_base(self):
         for rec in self:
@@ -116,6 +165,66 @@ class TelematicsScoringConfig(models.Model):
                 raise ValidationError(
                     f'Max Deduct / Trip ({rec.max_deduct_per_trip}) ต้องไม่เกิน Base Score ({rec.score_base})'
                 )
+
+    # ============================================================
+    # [G2] เพิ่ม 2026-07-08 (แก้ 2026-07-09 ตามบรีฟใหม่) — ล็อกฟิลด์เกณฑ์
+    # ทั้งหมดเมื่อ Active=True เท่านั้น (ตามบรีฟข้อ 4 "Data Security")
+    #
+    # นี่คือชั้น Python (บังคับจริงแม้เรียกผ่าน API/RPC ตรงๆ) ส่วนชั้น XML
+    # (attrs readonly บนฟอร์ม) อยู่ที่ views/telematics_scoring_views.xml
+    #
+    # ไม่ล็อก field สถานะ (last_push_at, last_push_status, approved_by_id,
+    # approved_at, is_locked) และไม่ล็อก 'active' เอง — ผู้ใช้ต้องปิด
+    # Active ได้เพื่อปลดล็อกฟิลด์อื่น — ตอน Active=False แก้ไข/Push ซ้ำ
+    # ได้เรื่อยๆ แม้เคย Push ไปแล้วก่อนหน้านี้ก็ตาม
+    # ============================================================
+    _LOCKED_CONFIG_FIELDS = {
+        'name', 'effective_date',
+        'score_base', 'max_deduct_per_trip',
+        'harsh_brake_deduct', 'harsh_accel_deduct', 'harsh_corner_deduct',
+        'speeding_deduct', 'idling_deduct', 'bump_deduct',
+        'harsh_brake_g', 'harsh_accel_g', 'harsh_corner_g',
+        'speeding_kmh_over', 'idle_min_threshold',
+        'speed_limit_bkk', 'speed_limit_upcountry',
+        'tier_a_min_score', 'tier_a_bonus_pct',
+        'tier_b_min_score', 'tier_b_bonus_pct',
+        'tier_c_min_score', 'tier_c_bonus_pct',
+    }
+
+    def write(self, vals):
+        touched = self._LOCKED_CONFIG_FIELDS.intersection(vals.keys())
+        if touched:
+            for rec in self:
+                if rec.active:
+                    raise UserError(
+                        'Config นี้ Active อยู่ — แก้ไขเกณฑ์คะแนนไม่ได้ '
+                        'เพื่อความโปร่งใสระหว่างรอบประเมิน\n\n'
+                        'วิธีแก้ไข: ปิด Active ก่อน (หรือสร้าง Config เวอร์ชันใหม่แทน)'
+                    )
+        return super().write(vals)
+
+    # ============================================================
+    # [G3] เพิ่ม 2026-07-08 — Approve Config (ตามบรีฟ "กำหนดผู้อนุมัติ")
+    # เฉพาะ group_fleet_manager กดอนุมัติได้ — ต้องอนุมัติก่อนถึงจะ Push
+    # ไป Backend ได้จริง (เช็คใน action_push_to_backend ด้านล่าง)
+    # ============================================================
+    def action_approve(self):
+        self.ensure_one()
+        if not self.env.user.has_group('fleet.fleet_group_manager'):
+            raise UserError('เฉพาะ Fleet Manager เท่านั้นที่มีสิทธิ์อนุมัติ Scoring Config')
+        self.write({
+            'approved_by_id': self.env.user.id,
+            'approved_at':    fields.Datetime.now(),
+        })
+        return {
+            'type': 'ir.actions.client',
+            'tag':  'display_notification',
+            'params': {
+                'title':   '✅ อนุมัติแล้ว',
+                'message': f'{self.env.user.name} อนุมัติ Config "{self.name}" แล้ว',
+                'type':    'success',
+            },
+        }
 
     # ============================================================
     # [H] Helper — ดึง Base URL ที่ถูกต้อง
@@ -164,6 +273,9 @@ class TelematicsScoringConfig(models.Model):
             'harsh_corner_g':      self.harsh_corner_g,
             'speeding_kmh_over':   self.speeding_kmh_over,
             'idle_min_threshold':  self.idle_min_threshold,
+            # เพิ่ม 2026-07-08: กฎความเร็วแยกโซน กทม./นอกเมือง (บรีฟข้อ 2)
+            'speed_limit_bkk':        self.speed_limit_bkk,
+            'speed_limit_upcountry':  self.speed_limit_upcountry,
             'max_deduct_per_trip': self.max_deduct_per_trip,
             'is_active':           self.active,
             'synced_from_odoo_at': (
@@ -177,6 +289,12 @@ class TelematicsScoringConfig(models.Model):
     # ============================================================
     def action_push_to_backend(self):
         self.ensure_one()
+        # เพิ่ม 2026-07-08: บังคับอนุมัติก่อน Push จริง (บรีฟ "กำหนดผู้อนุมัติ")
+        if not self.approved_by_id:
+            raise UserError(
+                'Config นี้ยังไม่ได้รับการอนุมัติ — กด "✅ Approve" ก่อน Push ไป Backend\n'
+                '(เฉพาะ Fleet Manager เท่านั้นที่อนุมัติได้)'
+            )
         base_url = self._get_base_url()
         endpoint = f'{base_url}/api/v1/config/scoring'
         payload  = self._build_config_payload()
@@ -323,6 +441,8 @@ class TelematicsScoringConfig(models.Model):
             f"Corner G: {data.get('harsh_corner_g','N/A')}",
             f"Speeding over: {data.get('speeding_kmh_over','N/A')} km/h  "
             f"Idle: {data.get('idle_min_threshold','N/A')} min",
+            f"Speed Limit — กรุงเทพฯ: {data.get('speed_limit_bkk','N/A')} km/h  "
+            f"นอกเมือง: {data.get('speed_limit_upcountry','N/A')} km/h",
         ]
         msg = '\n'.join(lines)
 

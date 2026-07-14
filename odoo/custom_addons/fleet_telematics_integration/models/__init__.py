@@ -11,3 +11,4 @@ from . import telematics_scoring
 from . import telematics_incentive
 from . import telematics_payload      # เพิ่ม 2026-06-30 — เดิมไม่เคยถูก import เลย (dead code)
 from . import telematics_report      # เพิ่ม 2026-06-30 — wizard ดึงรายงานจาก Backend
+from . import telematics_vehicle_trip  # Vehicle Trip History wizard

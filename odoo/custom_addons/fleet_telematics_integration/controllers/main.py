@@ -157,8 +157,23 @@ class TelematicsWebhookController(http.Controller):
     # ==========================================================================
     # POST /fleet_telematics/vehicles_location  (เพิ่มใหม่ 2026-07-01 — UC-06)
     # OWL Widget เรียก RPC มาที่นี่ทุก 30 วินาที (Polling ตาม FDD §7.3)
-    # Odoo วนดึง GET /vehicles/{id}/location จาก Backend ทีละคัน
-    # คืน array ของรถทุกคันที่มี Device + มีพิกัด GPS
+    #
+    # [แก้ไข 2026-07-06] FDD Table "Vehicles & Live" ระบุ endpoint
+    # GET /api/v1/vehicles ("ดึงรายการยานพาหนะทั้งหมด") ไว้เป็นทางการ แต่โค้ด
+    # เดิมไม่เคยเรียกเลย — วนยิง GET /vehicles/{id}/location ทีละคันแทน
+    # (ทำงานได้ แต่ยิง N ครั้งต่อรอบ polling แทนที่จะยิงครั้งเดียว)
+    #
+    # แก้ให้เรียก GET /api/v1/vehicles (bulk) เป็นตัวหลักตาม FDD ก่อน:
+    #   - ลองอ่านพิกัด/สถานะจากผลลัพธ์ bulk โดยรองรับหลายชื่อ key เท่าที่
+    #     เป็นไปได้ (lat/latitude, lon/longitude, ...) เพราะ Swagger ที่มี
+    #     ไม่ได้ระบุ schema ของ response แบบละเอียด (เห็นแค่ตัวอย่าง "string")
+    #   - ถ้า bulk call ล้มเหลว (network error / ไม่ใช่ 200 / parse ไม่ได้)
+    #     หรือได้ response แต่ไม่พบพิกัดของรถคันไหนเลยทั้งที่มีรถที่ต้องดึง
+    #     จะ fallback ไปใช้วิธีเดิม (วน GET /vehicles/{id}/location ทีละคัน)
+    #     เพื่อไม่ให้ Live Map พังถ้า schema จริงไม่ตรงกับที่สมมติไว้
+    #
+    # คืน array ของรถทุกคันที่มี Device + มีพิกัด GPS (รูปแบบผลลัพธ์เดิม
+    # ไม่เปลี่ยน — widget ฝั่ง frontend ไม่ต้องแก้)
     # ==========================================================================
     @http.route(
         '/fleet_telematics/vehicles_location',
@@ -181,7 +196,97 @@ class TelematicsWebhookController(http.Controller):
         vehicles = request.env['fleet.vehicle'].sudo().search([
             ('telematics_device_id', '!=', False),
         ])
+        vehicles_by_id = {v.id: v for v in vehicles}
 
+        def _build_entry(v, lat, lon, speed, ignition, ts):
+            return {
+                'vehicle_id':   v.id,
+                'vehicle_name': v.display_name or v.name,
+                'device_id':    v.telematics_device_id,
+                'driver_name':  v.driver_id.name if v.driver_id else '-',
+                'lat':          float(lat),
+                'lon':          float(lon),
+                'speed':        speed or 0,
+                'ignition':     bool(ignition),
+                'ts':           ts or '',
+            }
+
+        # ── 1) ลองทางหลักตาม FDD: GET /api/v1/vehicles (bulk, ครั้งเดียว) ──
+        try:
+            resp = _requests.get(
+                f'{api_url}/api/v1/vehicles',
+                headers={'APIKEY': api_key},
+                timeout=8,
+            )
+            if resp.status_code == 200:
+                payload = resp.json()
+                if isinstance(payload, dict):
+                    items = (
+                        payload.get('vehicles')
+                        or payload.get('data')
+                        or payload.get('items')
+                        or []
+                    )
+                elif isinstance(payload, list):
+                    items = payload
+                else:
+                    items = []
+
+                bulk_result = []
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    vid = (
+                        item.get('vehicle_id')
+                        or item.get('id')
+                        or item.get('odoo_vehicle_id')
+                    )
+                    try:
+                        vid = int(vid)
+                    except (TypeError, ValueError):
+                        continue
+                    v = vehicles_by_id.get(vid)
+                    if not v:
+                        continue  # รถคันนี้ไม่มี device ผูกใน Odoo (หรือไม่รู้จัก) ข้าม
+
+                    # telemetry อาจซ้อนอยู่ใต้ key เช่น 'location' / 'telemetry'
+                    tel = (
+                        item.get('location')
+                        or item.get('telemetry')
+                        or item.get('last_telemetry')
+                        or item
+                    )
+                    lat = tel.get('lat') or tel.get('latitude')
+                    lon = tel.get('lon') or tel.get('longitude')
+                    if not lat or not lon:
+                        continue  # ยังไม่มีพิกัด ข้าม (เหมือนพฤติกรรมเดิม)
+
+                    bulk_result.append(_build_entry(
+                        v, lat, lon,
+                        tel.get('speed'),
+                        tel.get('ignition', False),
+                        tel.get('ts') or tel.get('date_update_latest'),
+                    ))
+
+                if bulk_result or not vehicles:
+                    # ได้ผลลัพธ์ใช้ได้จริง (หรือไม่มีรถให้ดึงตั้งแต่แรก) ใช้ทางนี้เลย
+                    return bulk_result
+                # bulk เรียกสำเร็จแต่ parse ไม่ได้พิกัดของรถคันไหนเลย ทั้งที่มีรถ
+                # ต้องดึง → เดา schema ผิด, ตกไป fallback ด้านล่าง
+                _logger.warning(
+                    'vehicles_location: GET /api/v1/vehicles คืน 200 แต่ไม่พบพิกัด '
+                    'ที่ parse ได้เลย (schema อาจไม่ตรงตามที่คาด) → fallback เป็น per-vehicle'
+                )
+            else:
+                _logger.warning(
+                    'vehicles_location: GET /api/v1/vehicles ตอบ HTTP %s → fallback เป็น per-vehicle',
+                    resp.status_code,
+                )
+        except Exception as e:
+            _logger.warning(
+                'vehicles_location: GET /api/v1/vehicles ล้มเหลว (%s) → fallback เป็น per-vehicle', e)
+
+        # ── 2) Fallback: วิธีเดิม — วน GET /vehicles/{id}/location ทีละคัน ──
         result = []
         for v in vehicles:
             try:
@@ -200,17 +305,12 @@ class TelematicsWebhookController(http.Controller):
                 if not lat or not lon:
                     continue  # ยังไม่มีพิกัด ข้ามไป
 
-                result.append({
-                    'vehicle_id':   v.id,
-                    'vehicle_name': v.display_name or v.name,
-                    'device_id':    v.telematics_device_id,
-                    'driver_name':  v.driver_id.name if v.driver_id else '-',
-                    'lat':          float(lat),
-                    'lon':          float(lon),
-                    'speed':        data.get('speed', 0),
-                    'ignition':     bool(data.get('ignition', False)),
-                    'ts':           data.get('ts', ''),
-                })
+                result.append(_build_entry(
+                    v, lat, lon,
+                    data.get('speed'),
+                    data.get('ignition', False),
+                    data.get('ts'),
+                ))
             except Exception as e:
                 _logger.warning(
                     'vehicles_location: รถ %s (id=%s) ดึงไม่ได้: %s',

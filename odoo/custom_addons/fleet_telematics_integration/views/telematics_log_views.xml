@@ -133,10 +133,28 @@
                                 </list>
                             </field>
                         </page>
-                        <!-- Tab: GPS Track — แผนที่เส้นทางวิ่ง -->
-                        <page string="GPS Track" name="gps">
-                            <field name="gps_track_json" widget="text"
-                                   placeholder='[{"lat": 18.7883, "lon": 98.9853, "ts": "2025-01-01T08:00:00Z"}]'/>
+                        <!-- Tab: GPS Track — แผนที่เส้นทางวิ่ง (FDD §12.6) -->
+                        <page string="🗺️ GPS Track" name="gps">
+                            <div class="mb-2">
+                                <button name="action_load_trip_detail"
+                                        string="📡 โหลด GPS Track จาก Backend"
+                                        type="object" class="btn btn-sm btn-secondary"
+                                        invisible="not external_trip_id"/>
+                                <span invisible="external_trip_id != False"
+                                      class="text-muted small">
+                                    Trip นี้ไม่มี External Trip ID — ไม่สามารถโหลดจาก Backend ได้
+                                </span>
+                            </div>
+                            <!-- แผนที่ Leaflet แสดงเส้นทาง GPS -->
+                            <widget name="trip_map"
+                                    gps_track_json="gps_track_json"
+                                    events="event_ids"
+                                    invisible="not gps_track_json"/>
+                            <!-- fallback: ยังไม่มี GPS data -->
+                            <div invisible="gps_track_json != False"
+                                 class="text-muted text-center py-5">
+                                ยังไม่มีข้อมูล GPS Track — กดปุ่ม "โหลด GPS Track จาก Backend" ด้านบน
+                            </div>
                         </page>
                     </notebook>
                 </sheet>
@@ -228,21 +246,13 @@
         <field name="act_window_id" ref="action_telematics_analytics"/>
     </record>
 
-    <!-- Dashboard Action — KPI Summary (Score Trend) -->
-    <record id="action_telematics_dashboard" model="ir.actions.act_window">
-        <field name="name">Dashboard</field>
-        <field name="res_model">fleet.telematics.log</field>
-        <field name="view_mode">graph,pivot,list</field>
-        <field name="context">{'search_default_synced': 1, 'group_by': 'driver_id'}</field>
-        <field name="search_view_id" ref="view_telematics_log_search"/>
+    <!-- Driver Dashboard OWL Component (FDD §12.6) แทน KPI Summary graph view เดิม -->
+    <record id="action_telematics_driver_dashboard" model="ir.actions.client">
+        <field name="name">Driver Dashboard</field>
+        <field name="tag">fleet_telematics_driver_dashboard</field>
     </record>
-    <!-- ผูกกราฟ Score Trend เป็นมุมมองกราฟของ KPI Summary โดยเฉพาะ -->
-    <record id="action_telematics_dashboard_view_graph" model="ir.actions.act_window.view">
-        <field name="sequence" eval="1"/>
-        <field name="view_mode">graph</field>
-        <field name="view_id" ref="view_telematics_log_graph_score"/>
-        <field name="act_window_id" ref="action_telematics_dashboard"/>
-    </record>
+
+
 
     <!-- Fuel &amp; Energy Analysis -->
     <record id="action_telematics_fuel_summary" model="ir.actions.act_window">
@@ -274,6 +284,50 @@
         <field name="view_mode">graph</field>
         <field name="view_id" ref="view_telematics_log_graph_score"/>
         <field name="act_window_id" ref="action_telematics_driver_score_report"/>
+    </record>
+
+    <!-- ============================================================
+         [แก้ไข 2026-07-06] เดิมเมนู "Fleet Summary" และ "Fuel Efficiency
+         Report" ใน Reports ชี้ไป action เดียวกันเป๊ะกับ "Trip Analytics"
+         (Trip Logs) และ "Fuel & Energy Analysis" (Dashboard) ตามลำดับ —
+         กดคนละเมนูแต่ได้หน้าจอเดียวกันทุก pixel ทำให้สับสน
+         แก้โดยสร้าง action แยกของตัวเองให้ Reports โดยเฉพาะ พร้อม
+         default grouping ที่ต่างออกไปให้มีประโยชน์ในตัวของมันเอง
+         (แนวทางเดียวกับที่ทำกับ Driver Score Report ไปแล้วด้านบน)
+         ============================================================ -->
+
+    <!-- Reports > Fleet Summary — ภาพรวม fleet "รายวัน" (ตาม FDD:
+         "ภาพรวม fleet รายวัน (trips, distance, events)") ต่างจาก
+         Trip Analytics ที่เป็น pivot ระดับทริปเดี่ยวไม่ได้ group ตามวันที่ -->
+    <record id="action_telematics_report_fleet_summary" model="ir.actions.act_window">
+        <field name="name">Fleet Summary</field>
+        <field name="res_model">fleet.telematics.log</field>
+        <field name="view_mode">pivot,graph,list</field>
+        <field name="context">{'search_default_synced': 1, 'group_by': 'trip_start:day'}</field>
+        <field name="search_view_id" ref="view_telematics_log_search"/>
+    </record>
+    <record id="action_telematics_report_fleet_summary_view_graph" model="ir.actions.act_window.view">
+        <field name="sequence" eval="1"/>
+        <field name="view_mode">graph</field>
+        <field name="view_id" ref="view_telematics_log_graph_harsh"/>
+        <field name="act_window_id" ref="action_telematics_report_fleet_summary"/>
+    </record>
+
+    <!-- Reports > Fuel Efficiency Report — สรุป "รายรถ/เดือน" (ตาม FDD:
+         "Fuel report: idling, เชื้อเพลิงต่อ km รายรถ/เดือน") ต่างจาก
+         Fuel & Energy Analysis (Dashboard) ที่ไม่ได้ group ตามรถ -->
+    <record id="action_telematics_report_fuel_efficiency" model="ir.actions.act_window">
+        <field name="name">Fuel Efficiency Report</field>
+        <field name="res_model">fleet.telematics.log</field>
+        <field name="view_mode">pivot,graph,list</field>
+        <field name="context">{'search_default_synced': 1, 'group_by': 'vehicle_id'}</field>
+        <field name="search_view_id" ref="view_telematics_log_search"/>
+    </record>
+    <record id="action_telematics_report_fuel_efficiency_view_graph" model="ir.actions.act_window.view">
+        <field name="sequence" eval="1"/>
+        <field name="view_mode">graph</field>
+        <field name="view_id" ref="view_telematics_log_graph_fuel"/>
+        <field name="act_window_id" ref="action_telematics_report_fuel_efficiency"/>
     </record>
 
 </odoo>

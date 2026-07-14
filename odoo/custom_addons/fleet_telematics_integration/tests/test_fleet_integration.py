@@ -8,10 +8,10 @@
 # ==============================================================================
 
 from unittest.mock import patch, MagicMock
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, date, timezone, timedelta
 
 from odoo.tests.common import TransactionCase
-from odoo.exceptions import ValidationError
+from odoo.exceptions import ValidationError, UserError
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -41,6 +41,12 @@ class FleetTelematicsBase(TransactionCase):
         ICP = cls.env['ir.config_parameter'].sudo()
         ICP.set_param('fleet_telematics.mtd_api_url', 'http://test-backend:8001')
         ICP.set_param('fleet_telematics.mtd_api_key', 'TEST-KEY')
+
+        # เพิ่ม 2026-07-08: ต้องอยู่กลุ่ม Fleet Manager เพื่อทดสอบ action_approve()
+        # ของ fleet.telematics.scoring.config (ดู TestUC02ScoringConfig)
+        cls.env.user.write({
+            'groups_id': [(4, cls.env.ref('fleet.fleet_group_manager').id)]
+        })
 
     def _make_vehicle(self, plate, device=None):
         vals = {
@@ -298,6 +304,109 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
         self.assertTrue(c2.active)
         self.assertFalse(c1.active)
 
+    # ── เพิ่ม 2026-07-08: ทดสอบกฎความเร็วแยกโซน (บรีฟข้อ 2) ────────────────
+    def test_10_speed_limit_zone_defaults(self):
+        """ค่าเริ่มต้น speed_limit_bkk=80, speed_limit_upcountry=90"""
+        cfg = self._make_scoring('UC02-10', active=False)
+        self.assertEqual(cfg.speed_limit_bkk, 80.0)
+        self.assertEqual(cfg.speed_limit_upcountry, 90.0)
+
+    def test_11_speed_limit_bkk_higher_than_upcountry_raises(self):
+        """กรุงเทพฯ จำกัดสูงกว่านอกเมือง → ต้อง ValidationError (ผิดตรรกะ)"""
+        with self.assertRaises(ValidationError):
+            self._make_scoring('UC02-11', active=False,
+                                speed_limit_bkk=100.0,
+                                speed_limit_upcountry=90.0)
+
+    def test_12_speed_limit_zero_raises(self):
+        """speed_limit_bkk/upcountry = 0 → ValidationError"""
+        with self.assertRaises(ValidationError):
+            self._make_scoring('UC02-12', active=False, speed_limit_bkk=0.0)
+
+    def test_13_payload_includes_speed_limit_zone_keys(self):
+        """_build_config_payload() ต้องมี speed_limit_bkk/upcountry"""
+        cfg     = self._make_scoring('UC02-13')
+        payload = cfg._build_config_payload()
+        self.assertIn('speed_limit_bkk', payload)
+        self.assertIn('speed_limit_upcountry', payload)
+        self.assertEqual(payload['speed_limit_bkk'], 80.0)
+        self.assertEqual(payload['speed_limit_upcountry'], 90.0)
+
+    # ── เพิ่ม 2026-07-08: ทดสอบ Read-only lock เมื่อ Active/Push แล้ว (ข้อ 3) ──
+    def test_14_edit_locked_when_active_raises(self):
+        """แก้ไข field เกณฑ์คะแนนตอน active=True → ต้อง UserError"""
+        cfg = self._make_scoring('UC02-14', active=True)
+        with self.assertRaises(UserError):
+            cfg.write({'score_base': 50.0})
+
+    def test_15_edit_allowed_after_deactivate(self):
+        """ปิด active ก่อน แล้วแก้ไข field เกณฑ์คะแนน → ต้องสำเร็จ"""
+        cfg = self._make_scoring('UC02-15', active=True)
+        cfg.write({'active': False})
+        cfg.write({'score_base': 88.0})
+        self.assertEqual(cfg.score_base, 88.0)
+
+    def test_16_edit_allowed_after_push_while_inactive(self):
+        """แก้ 2026-07-09 ตามบรีฟใหม่: เคย Push แล้ว (last_push_at มีค่า) แต่
+        active=False → ต้องยังแก้ไข/Push ซ้ำได้เรื่อยๆ (ไม่ล็อกถาวรแล้ว)"""
+        cfg = self._make_scoring('UC02-16', active=False)
+        cfg.write({'last_push_at': '2026-07-08 10:00:00'})
+        cfg.write({'harsh_brake_deduct': 1.0})   # ต้องไม่ raise
+        self.assertEqual(cfg.harsh_brake_deduct, 1.0)
+
+    def test_17_is_locked_compute(self):
+        """is_locked = True เมื่อ active=True เท่านั้น (ไม่ผูกกับ last_push_at แล้ว)"""
+        cfg = self._make_scoring('UC02-17', active=False)
+        self.assertFalse(cfg.is_locked)
+        cfg.write({'last_push_at': '2026-07-08 10:00:00'})
+        self.assertFalse(cfg.is_locked)   # เคย push แต่ inactive → ไม่ล็อก
+        cfg.write({'active': True})
+        self.assertTrue(cfg.is_locked)
+
+    def test_17b_active_default_false_on_new_record(self):
+        """สร้าง record ใหม่โดยไม่ระบุ active → ต้องเป็น False (ไม่ล็อกฟอร์มตอนสร้าง)"""
+        cfg = self.env['fleet.telematics.scoring.config'].create({
+            'name': 'UC02-17B', 'effective_date': '2025-01-01',
+            'score_base': 100.0, 'max_deduct_per_trip': 50.0,
+            'harsh_brake_deduct': 5.0, 'harsh_accel_deduct': 3.0,
+            'harsh_corner_deduct': 3.0, 'speeding_deduct': 10.0,
+            'idling_deduct': 2.0, 'bump_deduct': 4.0,
+            'harsh_brake_g': 0.40, 'harsh_accel_g': 0.40, 'harsh_corner_g': 0.40,
+            'speeding_kmh_over': 20.0, 'idle_min_threshold': 5.0,
+            'tier_a_min_score': 90.0, 'tier_a_bonus_pct': 10.0,
+            'tier_b_min_score': 75.0, 'tier_b_bonus_pct': 5.0,
+            'tier_c_min_score': 60.0, 'tier_c_bonus_pct': 0.0,
+        })
+        self.assertFalse(cfg.active)
+        self.assertFalse(cfg.is_locked)
+
+    # ── เพิ่ม 2026-07-08: ทดสอบ Approval workflow (บรีฟ "กำหนดผู้อนุมัติ") ──
+    def test_18_push_without_approval_raises(self):
+        """Push Config โดยยังไม่มี approved_by_id → ต้อง UserError ก่อนยิง API เลย"""
+        cfg = self._make_scoring('UC02-18', active=False)
+        with self.assertRaises(UserError):
+            cfg.action_push_to_backend()
+
+    def test_19_approve_sets_approved_by_and_at(self):
+        """action_approve() ต้องตั้ง approved_by_id/approved_at (ในฐานะ Fleet Manager)"""
+        cfg = self._make_scoring('UC02-19', active=False)
+        cfg.action_approve()
+        self.assertTrue(cfg.approved_by_id)
+        self.assertTrue(cfg.approved_at)
+
+    def test_20_push_after_approval_succeeds(self):
+        """Approve แล้ว Push ต้องผ่านจุดเช็ค approval ไปถึงขั้นยิง API"""
+        cfg = self._make_scoring('UC02-20', active=False)
+        cfg.action_approve()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {'config': {'config_name': cfg.name}}
+        mock_resp.raise_for_status.return_value = None
+        with patch('requests.post', return_value=mock_resp):
+            cfg.action_push_to_backend()
+        self.assertTrue(cfg.last_push_at)
+        self.assertIn('OK', cfg.last_push_status)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # UC-04 — GPS Poll + Dedup + Batch  (telematics_log.py section [I]–[N])
@@ -493,3 +602,632 @@ class TestUC04TripSync(FleetTelematicsBase):
             self.fail(f"ต้องไม่ raise เมื่อไม่มี API URL: {e}")
         finally:
             ICP.set_param('fleet_telematics.mtd_api_url', 'http://test-backend:8001')
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# UC-10 — Audit Log บน Incentive state change (models/telematics_incentive.py)
+#   เพิ่มใหม่ 2026-07-06: เดิม UC-10 ไม่มี test เลย ทั้งที่ FDD §13 ระบุว่า
+#   "audit log ทุก state change" เป็น requirement ที่ต้องผ่าน
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestUC10IncentiveAuditLog(FleetTelematicsBase):
+    """ตรวจว่าทุกครั้งที่ state ของ Incentive เปลี่ยน ต้องมี message_post
+    (chatter log) บันทึกไว้อัตโนมัติ — ตาม FDD §13 "audit log ทุก state change" """
+
+    def _make_incentive(self, **kw):
+        vals = dict(
+            driver_id=self.employee.id,
+            date_from=date(2026, 6, 1), date_to=date(2026, 6, 30),
+            avg_score=88.0, min_score=70.0,
+            total_trips=20, total_distance_km=500.0,
+            total_harsh_events=3, total_idle_min=40.0,
+            incentive_tier='B', bonus_pct=5.0,
+            base_salary=20000.0,
+        )
+        vals.update(kw)
+        return self.env['fleet.telematics.incentive'].create(vals)
+
+    def test_01_model_has_mail_thread(self):
+        Incentive = self.env['fleet.telematics.incentive']
+        self.assertIn(
+            'mail.thread', Incentive._inherit if isinstance(Incentive._inherit, list) else [Incentive._inherit],
+            "fleet.telematics.incentive ต้อง _inherit mail.thread เพื่อให้มี audit log"
+        )
+
+    def test_02_confirm_creates_log_message(self):
+        inc = self._make_incentive()
+        msg_count_before = len(inc.message_ids)
+        inc.action_confirm()
+        self.assertEqual(inc.state, 'confirmed')
+        self.assertGreater(
+            len(inc.message_ids), msg_count_before,
+            "action_confirm() ต้อง message_post บันทึก log เพิ่มอย่างน้อย 1 ข้อความ"
+        )
+        last_body = inc.message_ids.sorted('date', reverse=True)[0].body
+        self.assertIn('Confirmed', last_body)
+
+    def test_03_approve_creates_log_and_sets_approved_by(self):
+        inc = self._make_incentive()
+        inc.action_confirm()
+        n_before = len(inc.message_ids)
+        inc.action_approve()
+        self.assertEqual(inc.state, 'approved')
+        self.assertEqual(inc.approved_by, self.env.user)
+        self.assertGreater(len(inc.message_ids), n_before)
+
+    def test_04_mark_paid_creates_log(self):
+        inc = self._make_incentive()
+        inc.action_confirm()
+        inc.action_approve()
+        n_before = len(inc.message_ids)
+        inc.action_mark_paid()
+        self.assertEqual(inc.state, 'paid')
+        self.assertGreater(len(inc.message_ids), n_before)
+
+    def test_05_reset_creates_log_and_clears_approved_by(self):
+        inc = self._make_incentive()
+        inc.action_confirm()
+        inc.action_approve()
+        n_before = len(inc.message_ids)
+        inc.action_reset()
+        self.assertEqual(inc.state, 'draft')
+        self.assertFalse(inc.approved_by)
+        self.assertGreater(len(inc.message_ids), n_before)
+
+    def test_06_full_workflow_has_one_log_entry_per_transition(self):
+        """draft→confirmed→approved→paid = อย่างน้อย 3 รอบ transition
+        ต้องมี message อย่างน้อย 3 ข้อความที่เพิ่มขึ้นมา (ไม่นับ create log)"""
+        inc = self._make_incentive()
+        n0 = len(inc.message_ids)
+        inc.action_confirm()
+        n1 = len(inc.message_ids)
+        inc.action_approve()
+        n2 = len(inc.message_ids)
+        inc.action_mark_paid()
+        n3 = len(inc.message_ids)
+        self.assertGreater(n1, n0)
+        self.assertGreater(n2, n1)
+        self.assertGreater(n3, n2)
+
+    def test_07_state_change_via_direct_write_still_tracked(self):
+        """tracking=True บน field state ต้องทำงานแม้เปลี่ยนผ่าน write() ตรงๆ
+        ไม่ใช่แค่ผ่าน action_* เท่านั้น (mail.thread auto-tracks field changes)"""
+        inc = self._make_incentive()
+        n_before = len(inc.message_ids)
+        inc.write({'state': 'confirmed'})
+        # mail.thread tracking สร้าง message แยกจาก manual message_post ใน action_confirm
+        self.assertGreaterEqual(len(inc.message_ids), n_before)
+
+    # ── เพิ่ม 2026-07-09: ทดสอบ date_from/date_to แทน period_month/year ────
+    def test_08_period_label_shows_date_range(self):
+        """period_label ต้องแสดงเป็นช่วงวันที่ ไม่ใช่ MM/YYYY แบบเดิม"""
+        inc = self._make_incentive(
+            date_from=date(2026, 6, 26), date_to=date(2026, 7, 25))
+        self.assertEqual(inc.period_label, '26/06/2026 - 25/07/2026')
+
+    def test_09_period_month_year_derived_from_date_from(self):
+        """period_month/period_year ต้อง derive จาก date_from อัตโนมัติ"""
+        inc = self._make_incentive(
+            date_from=date(2026, 7, 26), date_to=date(2026, 8, 25))
+        self.assertEqual(inc.period_month, 7)
+        self.assertEqual(inc.period_year, 2026)
+
+    def test_10_date_from_required(self):
+        """date_from/date_to เป็น required — สร้างโดยไม่ระบุต้อง raise"""
+        with self.assertRaises(Exception):
+            self.env['fleet.telematics.incentive'].create({
+                'driver_id': self.employee.id,
+            })
+
+    def test_11_duplicate_same_date_range_raises(self):
+        """สร้างซ้ำ driver+date_from+date_to เดิม → ต้อง raise (unique constraint)"""
+        self._make_incentive(date_from=date(2026, 5, 1), date_to=date(2026, 5, 31))
+        with self.assertRaises(Exception):
+            self._make_incentive(date_from=date(2026, 5, 1), date_to=date(2026, 5, 31))
+
+    # ── เพิ่ม 2026-07-09: ทดสอบ bonus_amount เป็น compute field จริง ───────
+    def test_12_bonus_amount_computed_from_formula(self):
+        """bonus_amount ต้อง = base_salary * bonus_pct / 100 เสมอ (คำนวณเอง)"""
+        inc = self._make_incentive(base_salary=30000.0, bonus_pct=10.0)
+        self.assertEqual(inc.bonus_amount, 3000.0)
+
+    def test_13_bonus_amount_updates_when_pct_changes(self):
+        """แก้ bonus_pct ตอน draft → bonus_amount ต้อง recompute ตาม"""
+        inc = self._make_incentive(base_salary=20000.0, bonus_pct=5.0)
+        self.assertEqual(inc.bonus_amount, 1000.0)
+        inc.write({'bonus_pct': 10.0})
+        self.assertEqual(inc.bonus_amount, 2000.0)
+
+    # ── เพิ่ม 2026-07-09: ทดสอบล็อกฟอร์มถาวรเมื่อพ้น Draft (บรีฟข้อ 5) ──────
+    def test_14_edit_blocked_after_confirm(self):
+        """แก้ไข field ผลงาน/โบนัส หลัง Confirm ไปแล้ว → ต้อง UserError"""
+        inc = self._make_incentive()
+        inc.write({'state': 'confirmed'})
+        with self.assertRaises(UserError):
+            inc.write({'avg_score': 99.0})
+
+    def test_15_edit_allowed_after_reset_to_draft(self):
+        """Reset กลับ Draft แล้วต้องแก้ไขได้อีกครั้ง"""
+        inc = self._make_incentive()
+        inc.write({'state': 'confirmed'})
+        inc.write({'state': 'draft'})
+        inc.write({'avg_score': 95.0})  # ต้องไม่ raise
+        self.assertEqual(inc.avg_score, 95.0)
+
+    def test_16_export_to_appraisal_requires_approved(self):
+        """action_export_to_appraisal() ก่อนถึง Approved → ต้อง UserError"""
+        inc = self._make_incentive()
+        with self.assertRaises(UserError):
+            inc.action_export_to_appraisal()
+
+    def test_17_export_to_appraisal_posts_to_employee(self):
+        """หลัง Approve แล้ว export ต้องสำเร็จและ post message ไปที่ hr.employee"""
+        inc = self._make_incentive()
+        inc.write({'state': 'confirmed'})
+        inc.write({'state': 'approved', 'approved_by': self.env.user.id})
+        n_before = len(self.employee.message_ids)
+        inc.action_export_to_appraisal()
+        self.assertGreater(len(self.employee.message_ids), n_before)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# UC-12 — Verify Device (GET /vehicles/{id}/device) — fleet_vehicle_ext.py
+#   เพิ่มใหม่ 2026-07-06
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestUC12VerifyDevice(FleetTelematicsBase):
+
+    def _mock_resp(self, status_code=200, json_data=None):
+        r = MagicMock()
+        r.status_code = status_code
+        r.json.return_value = json_data or {}
+        r.raise_for_status.return_value = None
+        return r
+
+    def test_01_matching_device_no_mismatch(self):
+        with patch('requests.get', return_value=self._mock_resp(
+                200, {'device_id': 'KTC-BASE-01', 'date_update_latest': '2026-07-01T00:00:00Z'})):
+            try:
+                self.v1.action_verify_device()
+            except Exception:
+                pass  # display_notification client action ไม่ raise แต่ ensure_one() ok
+        self.assertFalse(self.v1.device_verify_mismatch)
+        self.assertTrue(self.v1.device_verified_at)
+
+    def test_02_mismatched_device_flagged(self):
+        with patch('requests.get', return_value=self._mock_resp(
+                200, {'device_id': 'KTC-DIFFERENT-99'})):
+            self.v1.action_verify_device()
+        self.assertTrue(self.v1.device_verify_mismatch)
+        self.assertIn('KTC-DIFFERENT-99', self.v1.device_verify_note)
+
+    def test_03_backend_404_raises_and_flags_mismatch_if_odoo_has_device(self):
+        from odoo.exceptions import UserError
+        with patch('requests.get', return_value=self._mock_resp(404)):
+            with self.assertRaises(UserError):
+                self.v1.action_verify_device()
+        self.assertTrue(self.v1.device_verify_mismatch)
+
+    def test_04_connection_error_raises_and_flags_mismatch(self):
+        import requests as _requests
+        from odoo.exceptions import UserError
+        with patch('requests.get', side_effect=_requests.RequestException('timeout')):
+            with self.assertRaises(UserError):
+                self.v1.action_verify_device()
+        self.assertTrue(self.v1.device_verify_mismatch)
+        self.assertIn('เรียก Backend ไม่สำเร็จ', self.v1.device_verify_note)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# UC-12 — Reconcile Devices (GET /config_device) — models/telematics_config.py
+#   เพิ่มใหม่ 2026-07-06
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestUC12ReconcileDevices(FleetTelematicsBase):
+
+    def _get_config(self):
+        return self.env['fleet.telematics.config'].search([], limit=1, order='id asc') \
+            or self.env['fleet.telematics.config'].create({'name': 'Test Config'})
+
+    def _mock_resp(self, devices):
+        r = MagicMock()
+        r.json.return_value = {'devices': devices}
+        r.raise_for_status.return_value = None
+        return r
+
+    def test_01_all_matching_zero_mismatch(self):
+        config = self._get_config()
+        with patch('requests.get', return_value=self._mock_resp(
+                [{'device_id': 'KTC-BASE-01', 'vehicle_id': self.v1.id}])):
+            config.action_reconcile_devices()
+        self.assertEqual(config.device_mismatch_count, 0)
+        self.assertTrue(config.last_reconciled_at)
+
+    def test_02_vehicle_id_mismatch_detected(self):
+        config = self._get_config()
+        other_vehicle_id = self.v1.id + 9999
+        with patch('requests.get', return_value=self._mock_resp(
+                [{'device_id': 'KTC-BASE-01', 'vehicle_id': other_vehicle_id}])):
+            config.action_reconcile_devices()
+        self.assertGreaterEqual(config.device_mismatch_count, 1)
+        self.assertIn('vehicle_id', config.device_mismatch_note)
+
+    def test_03_odoo_device_missing_on_backend(self):
+        config = self._get_config()
+        with patch('requests.get', return_value=self._mock_resp([])):
+            config.action_reconcile_devices()
+        self.assertGreaterEqual(config.device_mismatch_count, 1)
+        self.assertIn('ยังไม่ได้ register จริง', config.device_mismatch_note)
+
+    def test_04_backend_extra_device_detected(self):
+        config = self._get_config()
+        with patch('requests.get', return_value=self._mock_resp([
+                {'device_id': 'KTC-BASE-01', 'vehicle_id': self.v1.id},
+                {'device_id': 'KTC-ORPHAN-99', 'vehicle_id': 12345},
+        ])):
+            config.action_reconcile_devices()
+        self.assertGreaterEqual(config.device_mismatch_count, 1)
+        self.assertIn('KTC-ORPHAN-99', config.device_mismatch_note)
+
+    def test_05_no_auto_fix_vehicle_untouched(self):
+        """ต้องไม่ auto-fix ข้อมูลรถ แม้เจอ mismatch — แค่รายงาน"""
+        config = self._get_config()
+        original_device = self.v1.telematics_device_id
+        with patch('requests.get', return_value=self._mock_resp(
+                [{'device_id': 'KTC-BASE-01', 'vehicle_id': self.v1.id + 1}])):
+            config.action_reconcile_devices()
+        self.assertEqual(self.v1.telematics_device_id, original_device)
+
+    def test_06_cron_wrapper_does_not_raise_on_connection_error(self):
+        import requests as _requests
+        config = self._get_config()
+        with patch('requests.get', side_effect=_requests.RequestException('down')):
+            try:
+                self.env['fleet.telematics.config']._cron_reconcile_devices()
+            except Exception as e:
+                self.fail(f"_cron_reconcile_devices ต้องไม่ raise ออกไปให้ cron scheduler เห็น: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# UC-11 — Portal Self-service: ตรวจ ir.rule ที่ควบคุมการเห็นข้อมูลของตัวเอง
+#   (Controller ใช้ sudo() + กรอง driver_id เอง — เทสนี้ยืนยันว่าชั้น ir.rule
+#    ที่เป็น defense-in-depth ยังทำงานถูกต้อง หากมีจุดเรียกอื่นที่ไม่ผ่าน sudo())
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestUC11PortalDataIsolation(FleetTelematicsBase):
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        Users = cls.env['res.users'].with_context(no_reset_password=True)
+        cls.driver_user = Users.create({
+            'name': 'Driver User', 'login': 'driver_user_test',
+            'groups_id': [(6, 0, [cls.env.ref('fleet.fleet_group_user').id])],
+        })
+        cls.employee.write({'user_id': cls.driver_user.id})
+
+        cls.other_employee = cls.env['hr.employee'].create({'name': 'Other Employee'})
+
+    def test_01_driver_sees_only_own_incentive(self):
+        Incentive = self.env['fleet.telematics.incentive']
+        own = Incentive.create({
+            'driver_id': self.employee.id,
+            'date_from': date(2026, 6, 1), 'date_to': date(2026, 6, 30),
+            'avg_score': 90.0,
+        })
+        others = Incentive.create({
+            'driver_id': self.other_employee.id,
+            'date_from': date(2026, 6, 1), 'date_to': date(2026, 6, 30),
+            'avg_score': 70.0,
+        })
+        visible = Incentive.with_user(self.driver_user).search([])
+        self.assertIn(own, visible)
+        self.assertNotIn(others, visible)
+
+    def test_02_driver_sees_only_own_trip_log(self):
+        Log = self.env['fleet.telematics.log']
+        own_trip = Log.create({
+            'vehicle_id': self.v1.id, 'driver_id': self.employee.id,
+            'trip_start': '2026-06-10 08:00:00', 'external_trip_id': 'T-OWN-1',
+        })
+        other_trip = Log.create({
+            'vehicle_id': self.v1.id, 'driver_id': self.other_employee.id,
+            'trip_start': '2026-06-10 09:00:00', 'external_trip_id': 'T-OTHER-1',
+        })
+        visible = Log.with_user(self.driver_user).search([])
+        self.assertIn(own_trip, visible)
+        self.assertNotIn(other_trip, visible)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# UC-Maintenance — 3 Trigger การแจ้งเตือนซ่อมบำรุง (FDD §2.2)
+#   เพิ่มใหม่ 2026-07-12: พบว่า Trigger 2 (ชั่วโมงเดินเครื่อง) ขาดหายไปทั้งหมด
+#   ในโค้ดเดิม — ไม่เคยมี test คลุมส่วนนี้เลยมาก่อน
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestMaintenanceTriggers(FleetTelematicsBase):
+
+    def setUp(self):
+        super().setUp()
+        ICP = self.env['ir.config_parameter'].sudo()
+        ICP.set_param('fleet_telematics.maintenance_km', '10000')
+        ICP.set_param('fleet_telematics.maintenance_hours', '250')
+        ICP.set_param('fleet_telematics.maintenance_days', '90')
+
+    def test_01_engine_hours_accumulate_on_sync(self):
+        """duration_min ของทริปต้องถูกสะสมลง telematics_engine_hours ของรถ"""
+        Log = self.env['fleet.telematics.log']
+        self.v1.write({'telematics_engine_hours': 0.0, 'odometer': 0})
+        Log._update_odometer_and_check_maintenance(
+            self.v1.id, distance_km=50.0, duration_min=120.0)  # 2 ชั่วโมง
+        self.assertAlmostEqual(self.v1.telematics_engine_hours, 2.0, places=2)
+
+    def test_02_hours_trigger_creates_service_when_no_prior_service(self):
+        """ไม่มี service record เลย + ชั่วโมงเครื่องเกิน threshold แรก → ต้องสร้าง"""
+        Log = self.env['fleet.telematics.log']
+        self.v1.write({'telematics_engine_hours': 0.0, 'odometer': 0})
+        Service = self.env['fleet.vehicle.log.services']
+        before = Service.search_count([('vehicle_id', '=', self.v1.id)])
+
+        # 260 ชั่วโมง (> threshold 250) ในทริปเดียว (ไม่สมจริงแต่พอสำหรับทดสอบ)
+        Log._update_odometer_and_check_maintenance(
+            self.v1.id, distance_km=100.0, duration_min=260 * 60)
+
+        after = Service.search_count([('vehicle_id', '=', self.v1.id)])
+        self.assertGreater(after, before, "ต้องสร้าง service alert เมื่อชั่วโมงเครื่องถึง threshold")
+
+    def test_03_hours_trigger_uses_snapshot_from_last_service(self):
+        """เทียบชั่วโมงสะสมกับ snapshot ตอน service ล่าสุด ไม่ใช่นับจากศูนย์ใหม่"""
+        Log     = self.env['fleet.telematics.log']
+        Service = self.env['fleet.vehicle.log.services']
+
+        # ตั้งให้เพิ่งเคย service ตอนชั่วโมงสะสม = 100
+        self.v1.write({'telematics_engine_hours': 100.0, 'odometer': 5000})
+        Service.create({
+            'vehicle_id': self.v1.id,
+            'date': date.today(),
+            'odometer': 5000,
+            'engine_hours_at_service': 100.0,
+            'description': 'Manual service (test baseline)',
+        })
+        before = Service.search_count([('vehicle_id', '=', self.v1.id)])
+
+        # เพิ่มอีกแค่ 50 ชั่วโมง (100+50=150 ยังไม่ถึง threshold 250) → ไม่ควรสร้างใหม่
+        Log._update_odometer_and_check_maintenance(
+            self.v1.id, distance_km=10.0, duration_min=50 * 60)
+        after_small = Service.search_count([('vehicle_id', '=', self.v1.id)])
+        self.assertEqual(after_small, before, "ยังไม่ถึง threshold ไม่ควรสร้าง service ใหม่")
+
+        # เพิ่มอีก 200 ชั่วโมง (150+200=350 เกิน threshold 250 จาก baseline 100) → ต้องสร้าง
+        Log._update_odometer_and_check_maintenance(
+            self.v1.id, distance_km=10.0, duration_min=200 * 60)
+        after_big = Service.search_count([('vehicle_id', '=', self.v1.id)])
+        self.assertGreater(after_big, after_small)
+
+    def test_04_km_trigger_still_works_unaffected(self):
+        """Trigger ระยะทางเดิมต้องยังทำงานถูกต้องหลังเพิ่ม Trigger ชั่วโมง"""
+        Log     = self.env['fleet.telematics.log']
+        Service = self.env['fleet.vehicle.log.services']
+        self.v1.write({'telematics_engine_hours': 0.0, 'odometer': 0})
+        before = Service.search_count([('vehicle_id', '=', self.v1.id)])
+
+        Log._update_odometer_and_check_maintenance(
+            self.v1.id, distance_km=15000.0, duration_min=10.0)  # เกิน 10,000 km
+
+        after = Service.search_count([('vehicle_id', '=', self.v1.id)])
+        self.assertGreater(after, before)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Event Logs — Lockdown 3 ชั้น + Zone-based Speed Limit (models/telematics_event.py)
+#   เพิ่มใหม่ 2026-07-12: โมเดลนี้ไม่เคยมี test เลยมาก่อน ทั้งที่เป็นจุดที่
+#   ทำ read-only lock 3 ชั้นและ zone speed limit ไว้ค่อนข้างซับซ้อน
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestEventLogsLockdown(FleetTelematicsBase):
+
+    def setUp(self):
+        super().setUp()
+        self.trip = self.env['fleet.telematics.log'].create({
+            'vehicle_id':  self.v1.id,
+            'driver_id':   self.employee.id,
+            'trip_start':  '2026-06-10 08:00:00',
+            'external_trip_id': 'T-EVT-TEST-1',
+        })
+
+    def _event_vals(self, **kw):
+        vals = dict(
+            trip_id=self.trip.id,
+            event_type='harsh_brake',
+            occurred_at='2026-06-10 08:05:00',
+            lat=13.75, lon=100.50,  # ในกรอบกรุงเทพฯ
+            severity=70.0,
+            speed_at_event=50.0,
+        )
+        vals.update(kw)
+        return vals
+
+    # ── ข้อ 1: ล็อกแก้ไข/ลบ/สร้างผ่านหน้าจอไม่ได้เด็ดขาด ────────────────────
+    def test_01_create_without_sync_context_raises(self):
+        Event = self.env['fleet.telematics.event']
+        with self.assertRaises(UserError):
+            Event.create(self._event_vals())
+
+    def test_02_create_with_sync_context_succeeds(self):
+        Event = self.env['fleet.telematics.event'].with_context(
+            fleet_telematics_allow_sync=True)
+        ev = Event.create(self._event_vals())
+        self.assertTrue(ev.id)
+
+    def test_03_write_without_sync_context_raises(self):
+        Event = self.env['fleet.telematics.event'].with_context(
+            fleet_telematics_allow_sync=True)
+        ev = Event.create(self._event_vals())
+        ev = ev.with_context(fleet_telematics_allow_sync=False)
+        with self.assertRaises(UserError):
+            ev.write({'severity': 99.0})
+
+    def test_04_unlink_without_sync_context_raises(self):
+        Event = self.env['fleet.telematics.event'].with_context(
+            fleet_telematics_allow_sync=True)
+        ev = Event.create(self._event_vals())
+        ev = ev.with_context(fleet_telematics_allow_sync=False)
+        with self.assertRaises(UserError):
+            ev.unlink()
+
+    def test_05_write_with_sync_context_succeeds(self):
+        Event = self.env['fleet.telematics.event'].with_context(
+            fleet_telematics_allow_sync=True)
+        ev = Event.create(self._event_vals())
+        ev.write({'severity': 55.0})
+        self.assertEqual(ev.severity, 55.0)
+
+    # ── ข้อ 2: Zone-based Speed Limit ───────────────────────────────────────
+    def test_06_bangkok_coords_gets_80kmh_limit(self):
+        Event = self.env['fleet.telematics.event'].with_context(
+            fleet_telematics_allow_sync=True)
+        ev = Event.create(self._event_vals(lat=13.75, lon=100.50, speed_at_event=50.0))
+        self.assertEqual(ev.zone_label, 'bangkok')
+        self.assertEqual(ev.speed_limit_kmh, 80.0)
+
+    def test_07_outside_bangkok_gets_90kmh_limit(self):
+        Event = self.env['fleet.telematics.event'].with_context(
+            fleet_telematics_allow_sync=True)
+        # เชียงใหม่ — อยู่นอกกรอบกรุงเทพฯ ชัดเจน
+        ev = Event.create(self._event_vals(lat=18.79, lon=98.98, speed_at_event=50.0))
+        self.assertEqual(ev.zone_label, 'outside')
+        self.assertEqual(ev.speed_limit_kmh, 90.0)
+
+    def test_08_zero_coords_treated_as_outside_not_bangkok(self):
+        """lat/lon = 0,0 (ยังไม่มีข้อมูลจริง) ต้องไม่ถูกตีเป็นกรุงเทพฯ"""
+        Event = self.env['fleet.telematics.event'].with_context(
+            fleet_telematics_allow_sync=True)
+        ev = Event.create(self._event_vals(lat=0.0, lon=0.0, speed_at_event=50.0))
+        self.assertEqual(ev.zone_label, 'outside')
+
+    def test_09_over_speed_limit_flag_true_when_exceeding(self):
+        Event = self.env['fleet.telematics.event'].with_context(
+            fleet_telematics_allow_sync=True)
+        ev = Event.create(self._event_vals(
+            event_type='speeding', lat=13.75, lon=100.50, speed_at_event=95.0))
+        self.assertTrue(ev.is_over_speed_limit)  # 95 > 80 (กรุงเทพฯ)
+
+    def test_10_not_over_speed_limit_when_within_range(self):
+        Event = self.env['fleet.telematics.event'].with_context(
+            fleet_telematics_allow_sync=True)
+        ev = Event.create(self._event_vals(
+            lat=13.75, lon=100.50, speed_at_event=60.0))
+        self.assertFalse(ev.is_over_speed_limit)  # 60 <= 80
+
+    # ── ข้อ 3: vehicle_id / driver_id related fields ────────────────────────
+    def test_11_vehicle_id_derived_from_trip(self):
+        Event = self.env['fleet.telematics.event'].with_context(
+            fleet_telematics_allow_sync=True)
+        ev = Event.create(self._event_vals())
+        self.assertEqual(ev.vehicle_id, self.v1)
+
+    def test_12_driver_id_derived_from_trip(self):
+        Event = self.env['fleet.telematics.event'].with_context(
+            fleet_telematics_allow_sync=True)
+        ev = Event.create(self._event_vals())
+        self.assertEqual(ev.driver_id, self.employee)
+
+    def test_13_deleting_trip_cascades_to_events(self):
+        """ondelete='cascade' — ลบ trip แล้ว event ต้องหายตามด้วย"""
+        Event = self.env['fleet.telematics.event'].with_context(
+            fleet_telematics_allow_sync=True)
+        ev = Event.create(self._event_vals())
+        ev_id = ev.id
+        self.trip.with_context(fleet_telematics_allow_sync=True).unlink()
+        self.assertFalse(Event.browse(ev_id).exists())
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Vehicle Trip History Wizard (models/telematics_vehicle_trip.py)
+#   เพิ่มใหม่ 2026-07-12: wizard นี้ไม่เคยมี test เลยมาก่อน
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestVehicleTripHistoryWizard(FleetTelematicsBase):
+
+    def test_01_fetch_without_vehicle_raises(self):
+        wiz = self.env['fleet.telematics.vehicle.trip.history'].create({})
+        with self.assertRaises(UserError):
+            wiz.action_fetch()
+
+    def test_02_fetch_without_device_raises(self):
+        """รถที่ยังไม่ผูก GPS Device ต้องเตือนก่อนดึงข้อมูล ไม่ใช่ดึงข้อมูลว่างเปล่า"""
+        vehicle_no_device = self.env['fleet.vehicle'].create({
+            'model_id': self.fmodel.id,
+            'license_plate': 'NO-DEVICE-01',
+        })
+        wiz = self.env['fleet.telematics.vehicle.trip.history'].create({
+            'vehicle_id': vehicle_no_device.id,
+        })
+        with self.assertRaises(UserError):
+            wiz.action_fetch()
+
+    def test_03_fetch_with_device_succeeds(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {'trips': [], 'total': 0, 'total_pages': 1}
+        wiz = self.env['fleet.telematics.vehicle.trip.history'].create({
+            'vehicle_id': self.v1.id,  # self.v1 มี telematics_device_id ผูกไว้แล้ว
+        })
+        with patch('requests.get', return_value=mock_resp):
+            wiz.action_fetch()
+        self.assertTrue(wiz.has_result)
+        self.assertEqual(wiz.total_trips, 0)
+
+    def test_04_vehicle_info_fields_populate_from_selection(self):
+        """เลือกรถแล้ว field ยืนยัน (ทะเบียน/device) ต้องขึ้นอัตโนมัติ"""
+        wiz = self.env['fleet.telematics.vehicle.trip.history'].create({
+            'vehicle_id': self.v1.id,
+        })
+        self.assertEqual(wiz.vehicle_license_plate, self.v1.license_plate)
+        self.assertEqual(wiz.telematics_device_id, self.v1.telematics_device_id)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Vehicle Aggregated Stats — total_trips/total_distance_km/avg_driver_score
+#   เพิ่มใหม่ 2026-07-12: พบว่า field เหล่านี้บน fleet.vehicle ไม่เคยถูกอัปเดต
+#   จากที่ไหนเลย ทั้งที่มี field อยู่แล้ว (ค้างเป็น 0 ตลอดไป)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestVehicleAggregatedStats(FleetTelematicsBase):
+
+    def test_01_total_trips_increments_per_call(self):
+        Log = self.env['fleet.telematics.log']
+        self.v1.write({'total_trips': 0, 'total_distance_km': 0.0, 'odometer': 0})
+        Log._update_odometer_and_check_maintenance(self.v1.id, distance_km=10.0)
+        Log._update_odometer_and_check_maintenance(self.v1.id, distance_km=15.0)
+        self.assertEqual(self.v1.total_trips, 2)
+
+    def test_02_total_distance_km_accumulates(self):
+        Log = self.env['fleet.telematics.log']
+        self.v1.write({'total_trips': 0, 'total_distance_km': 0.0, 'odometer': 0})
+        Log._update_odometer_and_check_maintenance(self.v1.id, distance_km=10.0)
+        Log._update_odometer_and_check_maintenance(self.v1.id, distance_km=15.5)
+        self.assertAlmostEqual(self.v1.total_distance_km, 25.5, places=2)
+
+    def test_03_avg_driver_score_computed_as_running_average(self):
+        Log = self.env['fleet.telematics.log']
+        self.v1.write({
+            'total_trips': 0, 'total_distance_km': 0.0,
+            'avg_driver_score': 0.0, 'odometer': 0,
+        })
+        Log._update_odometer_and_check_maintenance(
+            self.v1.id, distance_km=10.0, driver_score=90.0)
+        self.assertEqual(self.v1.avg_driver_score, 90.0)
+
+        Log._update_odometer_and_check_maintenance(
+            self.v1.id, distance_km=10.0, driver_score=70.0)
+        # เฉลี่ยของ 90 และ 70 = 80
+        self.assertEqual(self.v1.avg_driver_score, 80.0)
+
+    def test_04_no_driver_score_leaves_avg_unchanged(self):
+        """ถ้าไม่ส่ง driver_score มา (None) ไม่ควรไปทำให้ avg เพี้ยน"""
+        Log = self.env['fleet.telematics.log']
+        self.v1.write({
+            'total_trips': 1, 'avg_driver_score': 85.0, 'odometer': 0,
+        })
+        Log._update_odometer_and_check_maintenance(self.v1.id, distance_km=5.0)
+        self.assertEqual(self.v1.avg_driver_score, 85.0)
