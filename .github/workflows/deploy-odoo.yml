@@ -1,4 +1,5 @@
 name: Deploy Odoo
+
 on:
   workflow_run:
     workflows: ["CI Pipeline - Odoo"]
@@ -11,11 +12,17 @@ jobs:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
-      - name: Fix Docker credentials
+      # Sandbox แยกเก็บคอนฟิก Docker ชั่วคราวแทนการเข้าไปแก้ไฟล์หลักระบบ Mac
+      - name: Prepare Docker Sandbox Configuration
         run: |
-          jq '.credsStore = ""' ~/.docker/config.json > /tmp/docker-config.json && mv /tmp/docker-config.json ~/.docker/config.json
+          mkdir -p .docker_fallback/cli-plugins
+          echo '{"credsStore":""}' > .docker_fallback/config.json
+          ln -sf "$HOME/.docker/cli-plugins/docker-compose" .docker_fallback/cli-plugins/docker-compose
 
+      # สร้าง networks และ volumes ถ้ายังไม่มี
       - name: Create Docker networks and volumes
         run: |
           docker network create odoo-net || true
@@ -34,10 +41,64 @@ jobs:
           printf "ODOO_ADMIN_PASSWORD=%s\n" "${{ secrets.ODOO_ADMIN_PASSWORD }}" >> .env
           printf "LANG=C.UTF-8\n" >> .env
 
-      - name: Deploy Odoo
+      # ปิด stack dev ก่อน กันชน port 80/443/8069 กับ prod stack
+      - name: Stop dev stack if running (avoid port conflicts)
+        env:
+          DOCKER_CONFIG: ${{ github.workspace }}/.docker_fallback
+        run: |
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.odoo.yml \
+            -f docker-compose.dev.yml \
+            down --remove-orphans || true
+
+      - name: Deploy Odoo (prod)
+        env:
+          DOCKER_CONFIG: ${{ github.workspace }}/.docker_fallback
         run: |
           docker compose \
             -f docker-compose.yml \
             -f docker-compose.odoo.yml \
             -f docker-compose.prod.yml \
-            up -d --build
+            down --remove-orphans
+
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.odoo.yml \
+            -f docker-compose.prod.yml \
+            up -d --build --remove-orphans
+
+      # รอให้ Odoo container พร้อมก่อนสั่ง install/upgrade
+      - name: Wait for Odoo to be healthy
+        run: |
+          for i in $(seq 1 30); do
+            if docker inspect --format='{{.State.Health.Status}}' telematics-odoo 2>/dev/null | grep -q healthy; then
+              echo "Odoo is healthy"
+              break
+            fi
+            echo "Waiting for Odoo... ($i/30)"
+            sleep 5
+          done
+
+      # ติดตั้ง/อัปเดต custom module ทั้งหมดอัตโนมัติ (ดึงชื่อจากโฟลเดอร์ custom_addons)
+      - name: Install & Upgrade Odoo modules
+        run: |
+          MODULES=$(find odoo/custom_addons -maxdepth 1 -mindepth 1 -type d -exec basename {} \; | paste -sd, -)
+          echo "Modules found: $MODULES"
+
+          if [ -z "$MODULES" ]; then
+            echo "No custom modules found, skipping."
+          else
+            docker exec telematics-odoo odoo \
+              -i "$MODULES" \
+              -u "$MODULES" \
+              -d "${{ secrets.ODOO_DB_NAME }}" \
+              --no-http \
+              --stop-after-init
+          fi
+
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.odoo.yml \
+            -f docker-compose.prod.yml \
+            restart odoo
