@@ -1,12 +1,14 @@
-"""controllers/portal.py
-
-Controller หน้า Portal ให้พนักงานดูคะแนนขับขี่และประวัติโบนัสของตนเอง
-(UC-11 — Self-service ผ่าน Odoo Portal)
-
-ออกแบบให้ query ด้วย sudo() แล้วกรอง driver_id ด้วยมือในตัว controller เอง
-แทนที่จะเปิด ir.model.access ให้กลุ่ม portal เข้าถึงโมเดลโดยตรง เพื่อไม่ให้
-portal user มีสิทธิ์เข้าถึงโมเดลกว้างเกินจำเป็นผ่านช่องทางอื่น เช่น RPC
-"""
+# ==============================================================================
+# controllers/portal.py
+#
+# UC-11 — หน้าเว็บให้พนักงานขับรถล็อกอินดูคะแนน/โบนัสของตัวเองได้
+# (Odoo Portal Self-service ตาม FDD §2.3)
+#
+# ใช้งานได้กับทั้งผู้ใช้ภายในองค์กร (internal user) และผู้ใช้ Portal ภายนอก
+# ที่ผูกบัญชีไว้กับ hr.employee — ดึงข้อมูลด้วย sudo() แล้วกรอง driver_id
+# ด้วยมือในนี้เอง (ไม่เปิดสิทธิ์เข้าถึงโมเดลตรงๆ ให้กลุ่ม Portal ผ่าน
+# ir.model.access) เพื่อกันไม่ให้เข้าถึงข้อมูลคนอื่นผ่านช่องทางอื่น เช่น RPC
+# ==============================================================================
 
 from odoo import http
 from odoo.http import request
@@ -14,14 +16,11 @@ from odoo.addons.portal.controllers.portal import CustomerPortal
 
 
 class FleetTelematicsPortal(CustomerPortal):
-    """เพิ่ม route หน้า "คะแนนขับขี่ของฉัน" เข้าไปใน Customer Portal เดิม."""
+    """เพิ่มหน้าเว็บ /my/telematics ให้พนักงานดูคะแนนตัวเอง"""
 
     def _get_my_employee(self):
-        """หา hr.employee ที่ผูกกับผู้ใช้ที่ login อยู่ตอนนี้.
-
-        Returns:
-            recordset: hr.employee ตัวเดียว (หรือ empty recordset ถ้าไม่พบ)
-        """
+        """หาว่าผู้ใช้ที่ล็อกอินอยู่ตอนนี้ ผูกกับพนักงานคนไหนในระบบ HR
+        ใช้ field user_id (Many2one มาตรฐาน) จับคู่ผู้ใช้ Odoo กับ hr.employee"""
         return request.env['hr.employee'].sudo().search(
             [('user_id', '=', request.env.user.id)], limit=1
         )
@@ -31,22 +30,12 @@ class FleetTelematicsPortal(CustomerPortal):
         type='http', auth='user', website=True, sitemap=False,
     )
     def portal_my_telematics_score(self, **kwargs):
-        """แสดงหน้าคะแนนขับขี่และประวัติโบนัสของผู้ใช้ที่ login อยู่.
-
-        ขั้นตอน:
-          1. หา hr.employee ที่ผูกกับผู้ใช้ปัจจุบัน — ถ้าไม่มี (เช่น user
-             ไม่ใช่พนักงานขับรถ) แสดงหน้า "ไม่พบข้อมูลพนักงาน" แทน
-          2. ดึงประวัติ Incentive (12 รอบล่าสุด) และ Trip Log (15 เที่ยว
-             ล่าสุดที่ sync แล้ว) กรองด้วย driver_id = employee.id เสมอ
-             เพื่อให้พนักงานเห็นเฉพาะข้อมูลของตัวเองเท่านั้น
-          3. คำนวณคะแนนล่าสุดและคะแนนเฉลี่ยจาก trip ล่าสุดที่ดึงมา
-          4. render template แสดงผลทั้งหมด
-
-        Returns:
-            werkzeug response: หน้า HTML ของ Portal
-        """
+        """หน้าสรุปคะแนน — แสดงประวัติโบนัส 12 รอบล่าสุด + ทริป 15 รายการ
+        ล่าสุด + คะแนนเฉลี่ยของทริปล่าสุด กรองด้วย driver_id ของตัวเองเสมอ
+        เพื่อไม่ให้เห็นข้อมูลของพนักงานคนอื่น"""
         employee = self._get_my_employee()
         if not employee:
+            # ผู้ใช้คนนี้ไม่ได้ผูกกับพนักงานคนไหนเลยในระบบ HR
             return request.render(
                 'fleet_telematics_integration.portal_telematics_no_employee', {}
             )

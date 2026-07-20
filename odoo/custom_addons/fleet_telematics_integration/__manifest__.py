@@ -1,11 +1,7 @@
+# ==============================================================================
 # __manifest__.py — Fleet Telematics Integration
-#
-# ลงทะเบียนโมดูล กำหนดข้อมูลผู้พัฒนา, dependencies, และไฟล์ข้อมูล/asset
-# ทั้งหมดที่โมดูลนี้โหลด
-#
-# หมายเหตุ: ไฟล์นี้ต้องมีแค่ dict literal เดียวเท่านั้น (ห้ามมี docstring
-# หรือ statement อื่นปนอยู่) เพราะ Odoo อ่านไฟล์นี้ด้วย ast.literal_eval
-# ซึ่งต้องการ single expression เท่านั้น ใส่คำอธิบายได้แค่แบบ comment (#)
+# ลงทะเบียนโมดูล กำหนดข้อมูลผู้พัฒนา และ depends: fleet, hr
+# ==============================================================================
 {
     'name': 'Fleet Telematics Integration',
     'version': '19.0.1.0.0',
@@ -48,12 +44,12 @@
         'views/telematics_event_views.xml',
         'views/telematics_scoring_views.xml',
         'views/telematics_incentive_views.xml',
-        'views/telematics_payload_views.xml',
+        'views/telematics_payload_views.xml',  # API Inbox (raw payload log)
 
         # 4. Menu — แถบเมนูหลักและเมนูย่อย
         'views/telematics_menus.xml',
 
-        # 5. Portal — พนักงานดูคะแนน/โบนัสตนเอง (UC-11, Self-service)
+        # 5. Portal — พนักงานดูคะแนน/โบนัสตนเอง (UC-11)
         'views/portal_templates.xml',
     ],
 
@@ -74,5 +70,6 @@
     },
 
     # Seed ค่า Base URL / API Key จริงลง ir.config_parameter ตอนติดตั้งโมดูล
+    # ดูคำเตือนเรื่องความปลอดภัยของ API Key ที่ฝังในโค้ดได้ที่ __init__.py
     'post_init_hook': '_post_init_seed_telematics_config',
 }

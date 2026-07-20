@@ -1,12 +1,13 @@
-"""models/telematics_config.py
-
-ตั้งค่าการเชื่อมต่อกับ Backend API (URL, API Key) ในที่เดียว — เป็น
-singleton (record เดียวในระบบ, บล็อกการสร้างซ้ำผ่าน create()) พร้อม:
-  - ทดสอบการเชื่อมต่อและจดจำ URL ล่าสุดที่ใช้งานได้ (action_save_and_test)
-  - helper ให้โมเดลอื่นดึง URL/Key ที่ใช้งานได้จริง (get_active_api_url/key)
-  - Device Reconciliation: เทียบ device ที่ผูกไว้ใน Odoo กับที่ Backend
-    บันทึกจริง เพื่อจับความไม่ตรงกัน (action_reconcile_devices)
-"""
+# ==============================================================================
+# models/telematics_config.py
+#
+# หน้าตั้งค่าการเชื่อมต่อ Backend (API URL + API Key) — เก็บเป็นทั้ง record
+# (fleet.telematics.config) และ ir.config_parameter คู่กัน เพื่อให้โมเดลอื่น
+# ในระบบดึงค่าไปใช้ได้ง่ายผ่าน get_active_api_url()/get_active_api_key()
+# โดยไม่ต้องมาเปิดหา record เอง
+#
+# ระบบอนุญาตให้มี config ได้แค่ 1 record เท่านั้นในระบบ (ดู create() ด้านล่าง)
+# ==============================================================================
 
 import logging
 import requests
@@ -19,17 +20,16 @@ _logger = logging.getLogger(__name__)
 _PARAM_URL           = 'fleet_telematics.api_url_input'
 _PARAM_CONFIRMED_URL = 'fleet_telematics.last_confirmed_url'
 _PARAM_API_KEY       = 'fleet_telematics.mtd_api_key'
-_PARAM_API_URL       = 'fleet_telematics.mtd_api_url'   # compat เดิม
+_PARAM_API_URL       = 'fleet_telematics.mtd_api_url'   # ชื่อเดิม เก็บไว้เพื่อความเข้ากันได้ย้อนหลัง
 
 
 class TelematicsConfig(models.Model):
-    """ค่าตั้งต้นการเชื่อมต่อ Backend — มีได้เพียง record เดียวในระบบ."""
-
+    """ตั้งค่าการเชื่อมต่อ Backend + Dashboard สถานะระบบ + เครื่องมือ
+    ตรวจสอบ Device ตรงกันระหว่าง Odoo กับ Backend (Reconcile)"""
     _name = 'fleet.telematics.config'
     _description = 'Fleet Telematics Configuration'
     _rec_name = 'name'
 
-    # ── ฟิลด์ตั้งค่าการเชื่อมต่อ ─────────────────────────────────
     name = fields.Char(
         string='Config Name',
         default='Fleet Telematics Settings'
@@ -45,15 +45,12 @@ class TelematicsConfig(models.Model):
         help='Bearer token / APIKEY สำหรับยืนยันตัวตน'
     )
 
-    # API URL ล่าสุดที่ทดสอบแล้วใช้งานได้จริง — ระบบจดจำให้อัตโนมัติทุก
-    # ครั้งที่ action_save_and_test() ทดสอบสำเร็จ
     last_confirmed_url = fields.Char(
         string='API URL ล่าสุดที่ใช้งานได้',
         readonly=True,
         help='ระบบบันทึก URL นี้อัตโนมัติเมื่อทดสอบการเชื่อมต่อสำเร็จ'
     )
 
-    # ── System Health Dashboard ──────────────────────────────────
     connection_status = fields.Selection([
         ('untested', '⚪ Untested'),
         ('ready',    '🟢 Ready'),
@@ -64,31 +61,26 @@ class TelematicsConfig(models.Model):
         readonly=True
     )
 
-    # หมายเหตุ: fields.Datetime ของ Odoo เก็บค่าใน DB เป็น UTC เสมอ ใช้
-    # fields.Datetime.now() เขียนค่าลงฟิลด์นี้ — การแปลงไปแสดงตาม timezone
-    # ของผู้ใช้เป็นหน้าที่ของ Odoo ตอน render UI ให้อัตโนมัติอยู่แล้ว
+    # หมายเหตุ: fields.Datetime ของ Odoo เก็บใน DB เป็น UTC เสมอ ห้าม
+    # localize เป็น timezone ผู้ใช้ก่อนบันทึกเด็ดขาด — ใช้ fields.Datetime.
+    # now() เท่านั้นตอนเขียนค่า ส่วนการแสดงผลตาม timezone ผู้ใช้เป็นหน้าที่
+    # ของ Odoo ตอน render ให้อัตโนมัติอยู่แล้ว
     last_test_at = fields.Datetime(string='Last Tested At', readonly=True)
     last_sync_at = fields.Datetime(string='Last Synced At', readonly=True)
     last_error   = fields.Text(string='Last Error',         readonly=True)
 
-    # ── ผลลัพธ์ล่าสุดของ Device Reconciliation ───────────────────
-    # (เทียบ device ที่ผูกไว้ใน Odoo กับที่ Backend บันทึกจริง — ป้องกัน
-    # กรณีมีคนไป register/แก้ device ตรงที่ Backend โดยตรงไม่ผ่าน Odoo
-    # แล้วข้อมูลไม่ตรงกันแบบเงียบๆ โดยไม่มีใครรู้)
-    last_reconciled_at   = fields.Datetime(string='Last Device Reconcile At', readonly=True)
+    # ── Device Reconciliation ────────────────────────────────────────────
+    # ตรวจว่า Device ที่ผูกไว้ใน Odoo (fleet.vehicle.telematics_device_id)
+    # ตรงกับที่ Backend บันทึกจริงไหม — ป้องกันกรณีมีคนไป register/แก้ไข
+    # ตรงที่ Backend โดยตรง (ไม่ผ่าน Odoo) แล้วข้อมูล 2 ฝั่งไม่ตรงกันแบบ
+    # ไม่มีใครรู้
+    last_reconciled_at    = fields.Datetime(string='Last Device Reconcile At', readonly=True)
     device_mismatch_count = fields.Integer(string='Device Mismatch Found', readonly=True)
     device_mismatch_note  = fields.Text(string='Device Mismatch Detail', readonly=True)
 
     @staticmethod
     def _normalize_url(raw):
-        """เติม scheme (http://) ให้ input ที่ผู้ใช้กรอกมา ถ้ายังไม่มี.
-
-        Args:
-            raw (str): URL หรือ IP/hostname ดิบที่ผู้ใช้กรอก
-
-        Returns:
-            str: URL เต็มรูปแบบ (ไม่มี trailing slash) หรือ '' ถ้า input ว่าง
-        """
+        """เติม http:// นำหน้าให้ถ้า input ที่กรอกมายังไม่มี scheme"""
         raw = (raw or '').strip()
         if not raw:
             return ''
@@ -96,19 +88,13 @@ class TelematicsConfig(models.Model):
             return raw.rstrip('/')
         return f'http://{raw}'.rstrip('/')
 
+    # ── จำกัดให้มี config ได้แค่ 1 record ในระบบ ────────────────────────────
+    # ปุ่ม New บนหน้าจอ, RPC, import CSV/XLSX หรือช่องทางอื่นที่เผลอเรียก
+    # create() ตรงๆ จะโดนบล็อกด้วย UserError ทันที อนุญาตเฉพาะตอนสร้าง
+    # record แรกของระบบผ่าน context พิเศษ 'allow_telematics_config_create'
+    # เท่านั้น (ส่งมาจาก server action ตอนยังไม่มี config เลย)
     @api.model_create_multi
     def create(self, vals_list):
-        """สร้าง record ได้เฉพาะครั้งแรกของระบบเท่านั้น (บังคับ singleton).
-
-        บล็อกการสร้างเรคคอร์ดใหม่จากทุกช่องทาง (ปุ่ม New, RPC, import
-        CSV/XLSX, หรือโค้ดโมดูลอื่นที่เรียก .create() ตรงๆ) ยกเว้นกรณี
-        "สร้างเรคคอร์ดแรกของระบบ" ที่มาจาก server action
-        action_open_telematics_config ซึ่งต้องส่ง context key
-        'allow_telematics_config_create=True' มาด้วยเท่านั้น
-
-        Raises:
-            UserError: ถ้าพยายามสร้างโดยไม่มี context flag ที่อนุญาต
-        """
         if not self.env.context.get('allow_telematics_config_create'):
             raise UserError(
                 'ไม่อนุญาตให้สร้างเรคคอร์ด Fleet Telematics Config เพิ่ม '
@@ -120,45 +106,25 @@ class TelematicsConfig(models.Model):
         return super().create(vals_list)
 
     def default_get(self, fields_list):
-        """โหลดค่าปัจจุบันจาก ir.config_parameter มาตั้งเป็นค่าเริ่มต้นของ
-        ฟอร์ม (ใช้ตอนเปิดฟอร์ม 'New' — ให้ผู้ใช้เห็นค่าที่ตั้งไว้ล่าสุดเสมอ
-        แทนที่จะเป็นฟอร์มว่างเปล่า)."""
+        """โหลดค่าที่เคยตั้งไว้ใน ir.config_parameter มาแสดงตอนเปิดฟอร์มใหม่"""
         res = super().default_get(fields_list)
         ICP = self.env['ir.config_parameter'].sudo()
 
         stored_url = ICP.get_param(_PARAM_URL, '') \
-                     or ICP.get_param(_PARAM_API_URL, '')  # fallback compat
+                     or ICP.get_param(_PARAM_API_URL, '')
 
         res.update({
-            'api_url':           stored_url,
-            'api_key':           ICP.get_param(_PARAM_API_KEY, ''),
+            'api_url':            stored_url,
+            'api_key':            ICP.get_param(_PARAM_API_KEY, ''),
             'last_confirmed_url': ICP.get_param(_PARAM_CONFIRMED_URL, ''),
         })
         return res
 
     def action_save_and_test(self):
-        """บันทึกค่า API URL/Key ลง ir.config_parameter แล้วทดสอบเชื่อมต่อทันที.
-
-        ขั้นตอน:
-          1. normalize URL (เติม scheme ถ้าจำเป็น) แล้วบันทึกทั้ง URL ดิบ
-             และ URL ที่ normalize แล้วลง ir.config_parameter
-          2. ยิง GET /api/v1/devices ทดสอบว่าเชื่อมต่อได้จริง
-          3. สำเร็จ: ตั้ง connection_status='ready', จดจำ URL นี้เป็น
-             last_confirmed_url, แสดง notification สำเร็จ
-          4. ล้มเหลว: ตั้ง connection_status='error', บันทึก error, แจ้ง
-             ผู้ใช้ผ่าน UserError พร้อมบอกว่าระบบจะ fallback ไปใช้ URL
-             ล่าสุดที่เคยเชื่อมต่อได้ (ถ้ามี)
-
-        ใช้ write() ทับเรคคอร์ดปัจจุบันเสมอ (self มาจาก Form View ที่เปิด
-        อยู่โดยตรง) ไม่สร้างแถวใหม่ซ้ำ
-
-        Returns:
-            dict: action แสดง notification สำเร็จ
-
-        Raises:
-            UserError: ถ้ายังไม่กรอก API URL หรือเชื่อมต่อไม่สำเร็จ
-        """
-        self.ensure_one()  # ป้องกันการเรียกพร้อมกันหลายรายการ
+        """บันทึกค่า API URL/Key ลง ir.config_parameter แล้วทดสอบเชื่อมต่อ
+        ทันทีด้วยการยิง GET /api/v1/devices — เขียนทับ record เดิมเสมอ
+        (write ไม่ใช่ create) ไม่มีทางสร้างแถวซ้ำได้"""
+        self.ensure_one()
 
         raw_url = (self.api_url or '').strip()
         if not raw_url:
@@ -167,13 +133,11 @@ class TelematicsConfig(models.Model):
         api_url = self._normalize_url(raw_url)
         api_key = self.api_key or ''
 
-        # ── บันทึกค่าลง ir.config_parameter ──
         ICP = self.env['ir.config_parameter'].sudo()
-        ICP.set_param(_PARAM_URL,    raw_url)
-        ICP.set_param(_PARAM_API_URL, api_url)   # compat เดิม
+        ICP.set_param(_PARAM_URL,     raw_url)
+        ICP.set_param(_PARAM_API_URL, api_url)
         ICP.set_param(_PARAM_API_KEY, api_key)
 
-        # ── ทดสอบการเชื่อมต่อ ──
         try:
             resp = requests.get(
                 f'{api_url}/api/v1/devices',
@@ -182,8 +146,8 @@ class TelematicsConfig(models.Model):
             )
             resp.raise_for_status()
 
-            # Backend GET /api/v1/devices คืนเป็น dict {"total": N, "devices": [...]}
-            # ไม่ใช่ list ตรงๆ — รองรับทั้งสองรูปแบบเผื่อ schema เปลี่ยน
+            # Backend คืนเป็น dict {"total": N, "devices": [...]} ไม่ใช่
+            # list ตรงๆ — รองรับทั้ง 2 รูปแบบเผื่อ Backend เปลี่ยน schema
             try:
                 payload = resp.json()
                 if isinstance(payload, dict):
@@ -198,15 +162,13 @@ class TelematicsConfig(models.Model):
             except Exception:
                 device_count = '-'
 
-            # เชื่อมต่อสำเร็จ → fix URL นี้เป็น last_confirmed_url
             ICP.set_param(_PARAM_CONFIRMED_URL, raw_url)
 
-            # write() ทับเรคคอร์ดเดิม — ไม่ create แถวใหม่
             self.write({
-                'connection_status': 'ready',
-                'last_test_at':      fields.Datetime.now(),
+                'connection_status':  'ready',
+                'last_test_at':       fields.Datetime.now(),
                 'last_confirmed_url': raw_url,
-                'last_error':        False,
+                'last_error':         False,
             })
 
             _logger.info(
@@ -231,7 +193,6 @@ class TelematicsConfig(models.Model):
         except requests.RequestException as e:
             confirmed = ICP.get_param(_PARAM_CONFIRMED_URL, '')
 
-            # write() ทับเรคคอร์ดเดิม — ไม่ create แถวใหม่
             self.write({
                 'connection_status': 'error',
                 'last_test_at':      fields.Datetime.now(),
@@ -249,14 +210,10 @@ class TelematicsConfig(models.Model):
 
     @api.model
     def get_active_api_url(self):
-        """คืน API URL ที่ใช้งานได้จริง สำหรับให้โมเดลอื่นเรียกใช้.
-
-        ลำดับความสำคัญ: last_confirmed_url (URL ล่าสุดที่ทดสอบผ่าน) ก่อน
-        ถ้าไม่มีค่อย fallback ไปใช้ api_url ปัจจุบันที่ตั้งไว้
-
-        Returns:
-            str: URL ที่ normalize แล้ว (มี scheme, ไม่มี trailing slash)
-        """
+        """คืน API URL ที่ใช้งานได้จริงตอนนี้ — เลือก last_confirmed_url
+        (ค่าที่เคยทดสอบผ่านแล้ว) ก่อนเสมอ ถ้าไม่มีค่อย fallback ไปที่
+        api_url ปัจจุบัน — โมเดลอื่นในระบบเรียกใช้ฟังก์ชันนี้แทนการเปิด
+        record ของ config เอง"""
         ICP = self.env['ir.config_parameter'].sudo()
         confirmed = ICP.get_param(_PARAM_CONFIRMED_URL, '').strip()
         current   = ICP.get_param(_PARAM_URL, '').strip() \
@@ -266,32 +223,20 @@ class TelematicsConfig(models.Model):
 
     @api.model
     def get_active_api_key(self):
-        """คืน API Key ปัจจุบันที่ตั้งค่าไว้ใน ir.config_parameter."""
+        """คืน API Key ที่ใช้งานอยู่ตอนนี้"""
         ICP = self.env['ir.config_parameter'].sudo()
         return ICP.get_param(_PARAM_API_KEY, '')
 
     def action_reconcile_devices(self):
-        """เทียบรายการ Device ระหว่าง Odoo กับ Backend เพื่อจับความไม่ตรงกัน.
-
-        ดึงรายการ device ทั้งหมดจาก Backend (GET /api/v1/devices) มาเทียบ
-        กับรถใน Odoo ที่มี telematics_device_id (เฉพาะรถที่ผูก device ไว้
-        แล้วเท่านั้น) แล้วตรวจหาความไม่ตรงกัน 3 รูปแบบ:
-          1. Odoo ผูก device ไว้ แต่ Backend ไม่มี device นั้นเลย
-          2. Odoo กับ Backend ผูก device เดียวกันไว้กับคนละรถ
-          3. Backend มี device ที่ Odoo ไม่รู้จักเลย (register ตรงที่
-             Backend โดยไม่ผ่าน Odoo)
-
-        ไม่ auto-fix ให้ — แค่รายงานผลไว้ให้ Fleet Manager ตัดสินใจเอง
-        เพราะการแก้ข้อมูลรถ/device มีผลกับ Trip/Score จึงเสี่ยงเกินไปที่จะ
-        ให้ระบบแก้เองแบบเงียบๆ
-
-        Returns:
-            dict: action แสดง notification สรุปจำนวนที่ไม่ตรงกัน
-
-        Raises:
-            UserError: ถ้ายังไม่ได้ตั้งค่า API URL หรือดึงข้อมูลจาก Backend
-                ไม่สำเร็จ
-        """
+        """ดึงรายการ Device ทั้งหมดจาก Backend (GET /api/v1/devices) มา
+        เทียบกับที่ Odoo บันทึกไว้ (fleet.vehicle.telematics_device_id)
+        ทีละคัน ตรวจ 3 แบบ:
+          1) Odoo ผูก device ไว้ แต่ Backend ไม่รู้จัก device นั้นเลย
+          2) Odoo กับ Backend ผูก device ตัวเดียวกันไว้กับรถคนละคัน
+          3) Backend มี device ที่ไม่มีรถคันไหนใน Odoo ผูกไว้เลย
+        แค่รายงานผลให้ Fleet Manager ตัดสินใจเอง ไม่ auto-fix ให้ — เพราะ
+        การแก้ข้อมูลรถ/device มีผลกระทบต่อ Trip/คะแนน จึงเสี่ยงเกินไปที่จะ
+        ให้ระบบแก้เองแบบเงียบๆ"""
         self.ensure_one()
         api_url = self.get_active_api_url()
         api_key = self.get_active_api_key()
@@ -319,8 +264,9 @@ class TelematicsConfig(models.Model):
             })
             raise UserError(f'ดึงรายการ Device จาก Backend ไม่สำเร็จ:\n{e}')
 
-        # index Backend devices ด้วย device_id (upper-case) — response ใช้
-        # key "id" เป็นหลัก รองรับ "device_id" ด้วยเผื่อ schema เปลี่ยน
+        # รหัส device ในข้อมูลที่ Backend ส่งมาใช้ key "id" (ไม่ใช่
+        # "device_id") — เผื่อรองรับทั้งสองชื่อ key ในกรณี Backend เปลี่ยน
+        # schema ในอนาคต
         backend_by_id = {
             (d.get('id') or d.get('device_id') or '').upper(): d
             for d in backend_devices
@@ -335,7 +281,6 @@ class TelematicsConfig(models.Model):
 
         mismatches = []
 
-        # เทียบฝั่ง Odoo → Backend (ครอบคลุมทั้งกรณี 1 และ 2)
         for dev_id, vehicle in odoo_by_device.items():
             b = backend_by_id.get(dev_id)
             if not b:
@@ -351,7 +296,6 @@ class TelematicsConfig(models.Model):
                     f'แต่ Backend ผูก device นี้กับ vehicle_id={backend_vehicle_id} แทน'
                 )
 
-        # เทียบฝั่ง Backend → Odoo (กรณี 3: device ที่ Backend มีแต่ Odoo ไม่รู้จัก)
         for dev_id, b in backend_by_id.items():
             if dev_id not in odoo_by_device:
                 mismatches.append(
@@ -385,8 +329,7 @@ class TelematicsConfig(models.Model):
 
     @api.model
     def _cron_reconcile_devices(self):
-        """เรียกจาก ir.cron รายวัน — สั่ง reconcile ให้เรคคอร์ด config แรก
-        ของระบบโดยอัตโนมัติ (ห่อ UserError ไว้เพื่อไม่ให้ cron ล้มทั้งงาน)."""
+        """เรียกจาก ir.cron รายวัน — reconcile ให้ config record แรกของระบบ"""
         config = self.search([], limit=1, order='id asc')
         if config:
             try:

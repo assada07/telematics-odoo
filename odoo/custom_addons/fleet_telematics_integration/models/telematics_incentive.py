@@ -1,15 +1,16 @@
-"""models/telematics_incentive.py
-
-คำนวณโบนัสประจำเดือนของแต่ละคนขับ (UC-09) พร้อม audit log ทุก state
-change (UC-10) ผ่าน mail.thread — workflow: draft → confirmed → approved
-→ paid (แก้ไขข้อมูลได้เฉพาะตอน draft เท่านั้น)
-
-สถิติผลงาน (avg_score, total_trips ฯลฯ) คำนวณจาก Trip Log ในเครื่อง
-ส่วน bonus_pct/tier ดึงจาก Backend (GET /drivers/{id}/bonus) เพราะ
-Backend เป็นเจ้าของสูตรคำนวณ tier จริง — ถ้าเรียก Backend ไม่สำเร็จ
-(offline/timeout) จะ fallback ไปคำนวณ tier เองจาก Scoring Config
-thresholds แทน (ดู _apply_backend_bonus / _local_tier_from_score)
-"""
+# ==============================================================================
+# models/telematics_incentive.py
+#
+# ใบโบนัสรายเดือนของพนักงานขับรถ — คำนวณ Tier/% โบนัสจากคะแนนพฤติกรรม
+# การขับขี่สะสม แล้วคูณกับฐานเงินเดือนได้เป็นยอดเงินโบนัสสุทธิ
+#
+# Workflow: Draft (แก้ไขได้) → Confirmed → Approved → Paid (ล็อกถาวรตั้งแต่
+# พ้น Draft ต้องกด Reset กลับ Draft ก่อนถึงจะแก้ไขได้อีก)
+#
+# Bonus % ดึงจาก Backend (GET /drivers/{id}/bonus) เป็นหลัก — ถ้าเรียกไม่ได้
+# (Backend ล่ม/timeout) จะคำนวณสำรองในเครื่องจาก threshold ของ Scoring
+# Config แทน (bonus_source = local_fallback) เพื่อไม่ให้ระบบหยุดทำงาน
+# ==============================================================================
 import logging
 from datetime import date, timedelta
 
@@ -23,30 +24,25 @@ _logger = logging.getLogger(__name__)
 
 
 class TelematicsIncentive(models.Model):
-    """ใบโบนัส 1 record ต่อ 1 คนขับ ต่อ 1 รอบวันที่ (date_from–date_to)."""
-
+    """ใบโบนัส 1 ใบ = พนักงาน 1 คน ในช่วงวันที่ 1 ช่วง (รองรับรอบตัดวิกที่
+    ไม่ตรงเดือนปฏิทิน) — ผูก mail.thread ไว้เก็บ audit log ทุกครั้งที่
+    สถานะเปลี่ยน เพราะเป็นข้อมูลการเงิน"""
     _name        = 'fleet.telematics.incentive'
     _description = 'Fleet Telematics Monthly Incentive'
     _order       = 'period_year desc, period_month desc'
-    # audit log ทุก state change ผ่าน mail.thread (UC-10) — ข้อมูลการเงิน
-    # (โบนัส) จึงต้องมี audit trail ที่แก้ไขเองไม่ได้
     _inherit = ['mail.thread', 'mail.activity.mixin']
 
-    # กันสร้างใบโบนัสซ้ำที่ระดับฐานข้อมูลจริง สำหรับคนขับคนเดียวกันในช่วง
-    # วันที่เดียวกัน (รองรับ "รอบตัดวิก" ที่ไม่ตรงเดือนปฏิทิน เช่น
-    # 26 มิ.ย. – 25 ก.ค. ด้วย จึง unique ด้วย date_from/date_to ตรงๆ
-    # แทนที่จะ unique ด้วย period_month/period_year)
+    # ห้ามพนักงานคนเดียวกันมีใบโบนัสช่วงวันที่เดียวกันซ้ำ 2 ใบ
     _driver_period_unique = models.Constraint(
         'UNIQUE(driver_id, date_from, date_to)',
         'พนักงานคนนี้มีรายการโบนัสของช่วงวันที่นี้อยู่แล้ว — ห้ามสร้างซ้ำ',
     )
 
-    # ── ระบุว่าคำนวณโบนัสของใคร รอบไหน ───────────────────────────
     driver_id = fields.Many2one(
         'hr.employee', string='Driver', required=True)
-    # field related+store แบบ flat (ระดับเดียว) สำหรับ ir.rule — ใช้แทน
-    # domain แบบ dotted-path ('driver_id.user_id', ...) ที่ทำให้ ir.rule
-    # ของโมเดลนี้โหลดไม่ได้ในบางเวอร์ชัน Odoo
+    # field แบบ related+store แบบ flat ระดับเดียว ใช้เฉพาะสำหรับ record rule
+    # (security/telematics_security.xml) — Odoo ตรวจ domain แบบ dotted-path
+    # หลายชั้นในบางกรณีมีปัญหา ใช้ field ตรงนี้ตัดปัญหาไปเลย ไม่ต้องแสดงในฟอร์ม
     driver_user_id = fields.Many2one(
         'res.users', string='Driver User (internal)',
         related='driver_id.user_id', store=True, readonly=True,
@@ -56,14 +52,13 @@ class TelematicsIncentive(models.Model):
         string='Scoring Config (snapshot)',
         help='Snapshot ของ config ที่ใช้คำนวณรอบนี้')
 
-    # ช่วงวันที่จริง (ไม่ใช่แค่เดือน/ปี) เพื่อรองรับรอบตัดวิกที่ไม่ตรง
-    # เดือนปฏิทิน เช่น 26 ของเดือนก่อน ถึง 25 เดือนนี้
+    # ใช้ช่วงวันที่จริงแทนการเลือกเดือน/ปีแยก เพื่อรองรับรอบตัดวิกที่ไม่ตรง
+    # เดือนปฏิทิน (เช่น 26 ของเดือนก่อน ถึง 25 เดือนนี้)
     date_from = fields.Date(string='วันที่เริ่มต้น', required=True)
     date_to   = fields.Date(string='วันที่สิ้นสุด', required=True)
 
-    # period_month/period_year คำนวณอัตโนมัติจาก date_from (ผู้ใช้ไม่ต้อง
-    # กรอกเอง) เก็บไว้เพื่อให้ report/portal เดิมที่อ้างอิง field นี้อยู่
-    # ยังทำงานได้ปกติ
+    # เดือน/ปีคำนวณอัตโนมัติจาก date_from เก็บไว้ให้ report/portal เดิมที่
+    # อ้างอิง field นี้อยู่ยังทำงานได้ปกติ ผู้ใช้ไม่ต้องกรอกเอง
     period_month = fields.Integer(
         string='Month', compute='_compute_period_ints', store=True)
     period_year = fields.Integer(
@@ -73,7 +68,7 @@ class TelematicsIncentive(models.Model):
         compute='_compute_period_label', store=True,
         help='แสดงผลเป็นช่วงวันที่ เช่น 01/06/2026 - 25/06/2026')
 
-    # ── สถิติสรุปจาก Trip Logs ของรอบนั้น (คำนวณจาก _compute_incentive) ──
+    # ── สถิติสรุปจาก Trip Logs ในช่วงวันที่นี้ ────────────────────────────
     avg_score = fields.Float(
         string='Avg Score', digits=(5, 2),
         compute='_compute_incentive', store=True)
@@ -93,11 +88,10 @@ class TelematicsIncentive(models.Model):
         string='Total Idle (min)', digits=(10, 2),
         compute='_compute_incentive', store=True)
 
-    # ── ผลลัพธ์ Tier และจำนวนโบนัสที่ได้รับ ───────────────────────
-    # ดึง bonus_pct/tier จาก Backend (GET /drivers/{id}/bonus) แล้วคูณ
-    # base_salary เอง — ไม่ใช่ compute field อัตโนมัติเพราะต้องเรียก API
-    # ภายนอก ตั้งค่าผ่าน _apply_backend_bonus() (เรียกตอน cron หรือกดปุ่ม
-    # "Refresh from Backend")
+    # ── ผลลัพธ์ Tier และยอดโบนัส ────────────────────────────────────────
+    # bonus_pct/incentive_tier ดึงจาก Backend ผ่าน _apply_backend_bonus()
+    # (ตอนสร้างจาก cron หรือกดปุ่ม "Refresh from Backend" เอง) ไม่ใช่ compute
+    # field อัตโนมัติเพราะต้องเรียก API ภายนอก
     incentive_tier = fields.Selection([
         ('A', 'A — Excellent'),
         ('B', 'B — Good'),
@@ -105,12 +99,9 @@ class TelematicsIncentive(models.Model):
         ('D', 'D — Needs Improvement'),
     ], string='Tier', default='D', readonly=True)
     bonus_pct    = fields.Float(string='Bonus %',      digits=(5, 2),  default=0.0, readonly=True)
-    # readonly ควบคุมโดย View ตาม is_locked เท่านั้น (แก้ไขได้ตอน Draft
-    # เท่านั้น) — ไม่บังคับ readonly=True ระดับ Python เพื่อไม่ให้ override
-    # ทับ attrs ของ View
+    # readonly คุมที่ระดับ View (readonly="is_locked") ไม่ใช่ hardcode ใน
+    # Python — แก้ไขได้เฉพาะตอน state=Draft เท่านั้น
     base_salary  = fields.Float(string='Base Salary',  digits=(10, 2), default=0.0)
-    # compute field ผูกสูตรตายตัว (Base Salary × Bonus %) ป้องกันไม่ให้
-    # ตัวเลขหลุดจากสูตรได้ (ไม่ใช่ field ที่พิมพ์แก้ตรงๆ ได้)
     bonus_amount = fields.Float(
         string='Bonus (THB)', digits=(10, 2),
         compute='_compute_bonus_amount', store=True, readonly=True,
@@ -125,7 +116,6 @@ class TelematicsIncentive(models.Model):
     # เป็น Tier D อยู่เหมือนเดิม (ดู _notify_hr_tier_d)
     tier_d_notified = fields.Boolean(string='แจ้งเตือน Tier D แล้ว', default=False, readonly=True)
 
-    # ── ล็อกทั้งฟอร์มถาวรเมื่อพ้น Draft ────────────────────────────
     is_locked = fields.Boolean(
         string='ล็อกการแก้ไข', compute='_compute_is_locked',
         help='True เมื่อ state ไม่ใช่ Draft แล้ว — ฟิลด์ทั้งหมดแก้ไขไม่ได้ '
@@ -133,25 +123,22 @@ class TelematicsIncentive(models.Model):
 
     @api.depends('state')
     def _compute_is_locked(self):
-        """is_locked = True เมื่อ state ไม่ใช่ 'draft'."""
         for rec in self:
             rec.is_locked = rec.state != 'draft'
 
-    # ── Workflow State ของใบโบนัส: draft → confirmed → approved → paid ──
     state = fields.Selection([
         ('draft',     'Draft'),
         ('confirmed', 'Confirmed'),
         ('approved',  'Approved'),
         ('paid',      'Paid'),
     ], default='draft', tracking=True)  # tracking=True → chatter บันทึก log
-                                         # อัตโนมัติทุกครั้งที่ state เปลี่ยน (UC-10)
+                                         # ทุกครั้งที่ state เปลี่ยน (audit log)
     approved_by = fields.Many2one('res.users', string='Approved By', readonly=True, tracking=True)
     note        = fields.Text(string='Notes')
 
     @api.depends('date_from')
     def _compute_period_ints(self):
-        """แยก period_month/period_year จาก date_from (เก็บไว้ให้ฟีเจอร์เดิม
-        ที่อ้างอิง field นี้อยู่ยังทำงานได้ปกติ)."""
+        """แยกเดือน/ปีออกจาก date_from ให้อัตโนมัติ"""
         for rec in self:
             if rec.date_from:
                 rec.period_month = rec.date_from.month
@@ -162,7 +149,7 @@ class TelematicsIncentive(models.Model):
 
     @api.depends('date_from', 'date_to')
     def _compute_period_label(self):
-        """แสดง period เป็นช่วงวันที่อ่านง่าย เช่น '01/06/2026 - 25/06/2026'."""
+        """แสดงช่วงวันที่แบบอ่านง่าย เช่น 01/06/2026 - 25/06/2026"""
         for rec in self:
             if rec.date_from and rec.date_to:
                 rec.period_label = (
@@ -174,12 +161,9 @@ class TelematicsIncentive(models.Model):
 
     @api.depends('driver_id', 'date_from', 'date_to')
     def _compute_incentive(self):
-        """คำนวณสถิติผลงาน (avg_score, total_trips ฯลฯ) จาก Trip Log ในช่วง
-        date_from–date_to (date_to นับรวมอยู่ในช่วงด้วย/inclusive).
-
-        ไม่คำนวณ bonus_pct/tier ในนี้ — ย้ายไปทำใน _apply_backend_bonus()
-        เพราะต้องเรียก Backend API
-        """
+        """ดึง Trip Log ของพนักงานคนนี้ในช่วงวันที่ที่กำหนด (date_to นับ
+        รวมเป็นวันสุดท้ายด้วย) มาคำนวณสถิติสรุป — ไม่รวม bonus_pct/tier
+        ตรงนี้ ย้ายไปคำนวณใน _apply_backend_bonus() แยกต่างหาก"""
         TripLog = self.env['fleet.telematics.log'].sudo()
         for rec in self:
             if not (rec.driver_id and rec.date_from and rec.date_to):
@@ -188,7 +172,7 @@ class TelematicsIncentive(models.Model):
                 rec.total_distance_km = rec.total_idle_min = 0.0
                 continue
 
-            date_from_excl = rec.date_to + timedelta(days=1)  # date_to รวมอยู่ในช่วง
+            date_from_excl = rec.date_to + timedelta(days=1)
 
             logs = TripLog.search([
                 ('driver_id',  '=', rec.driver_id.id),
@@ -209,23 +193,19 @@ class TelematicsIncentive(models.Model):
             )
 
     def _apply_backend_bonus(self):
-        """ดึง bonus_pct/tier จาก Backend มาตั้งค่าให้ record นี้ (คูณกับ
-        base_salary เพื่อได้ bonus_amount).
+        """คำนวณ/อัปเดต Base Salary + Tier + Bonus % ให้ใบโบนัสนี้ทั้งหมด
+        เรียกตอนกดปุ่ม "Refresh from Backend" หรือตอน Confirm
 
-        ขั้นตอน:
-          1. หา base_salary ของคนขับ: ลองจาก hr.version (Odoo 19) หรือ
-             hr.contract (เวอร์ชันเก่ากว่า) ก่อน ถ้าไม่พบใช้
-             telematics_base_salary บนโปรไฟล์พนักงาน หรือค่าที่กรอกเองไว้
-             ในใบนี้เป็นลำดับสุดท้าย
-          2. เรียก GET /drivers/{id}/bonus — ถ้าสำเร็จ ใช้ bonus_pct/tier
-             จาก Backend ตรงๆ (bonus_source='backend')
-          3. ถ้าเรียกไม่สำเร็จ fallback ไปคำนวณ tier เองจาก Scoring Config
-             thresholds (bonus_source='local_fallback')
-          4. ถ้าผลลัพธ์เป็น Tier D แจ้งเตือน HR (_notify_hr_tier_d) โดยไม่
-             ให้ error จากการแจ้งเตือนกระทบการคำนวณโบนัสหลัก
+        ลำดับการหาฐานเงินเดือน:
+          1) hr.version (Odoo 19) ที่ is_current=True ของพนักงานคนนี้
+          2) hr.contract (Odoo เวอร์ชันเก่ากว่า 19 ที่ยังใช้โมเดลนี้อยู่)
+          3) telematics_base_salary ที่กรอกไว้บนโปรไฟล์พนักงาน (fallback)
+          4) ค่าที่กรอกเองไว้ในใบนี้ (fallback สุดท้าย)
 
-        Raises:
-            UserError: ถ้ายังไม่ได้เลือก driver ของ record ใดๆ ใน self
+        ลำดับการหา Tier/Bonus %:
+          1) ยิง GET /drivers/{id}/bonus ไปที่ Backend
+          2) ถ้าเรียกไม่ได้ → คำนวณสำรองในเครื่องจาก Scoring Config
+             (bonus_source = local_fallback)
         """
         no_driver = self.filtered(lambda r: not r.driver_id)
         if no_driver:
@@ -236,16 +216,14 @@ class TelematicsIncentive(models.Model):
         api_key = Config.get_active_api_key()
 
         for rec in self:
-            # ดึง base_salary จากสัญญาจ้างพนักงาน — Odoo 19 ใช้โมเดล
-            # hr.version แทน hr.contract เดิม (field: employee_id, wage,
-            # is_current — is_current=True คือสัญญาปัจจุบันที่ใช้งานอยู่)
             base_salary = 0.0
             found_from_contract = False
 
             if 'hr.version' in self.env:
                 # is_current เป็น compute field ที่ไม่ได้ stored ในฐานข้อมูล
-                # จึงใส่ในเงื่อนไข search() ตรงๆ ไม่ได้ ต้องดึงทุก version
-                # ของพนักงานคนนั้นมาก่อน แล้วกรองด้วย Python ภายหลัง
+                # จึงใช้ใน search() domain ตรงๆ ไม่ได้ ต้องดึงทุก version
+                # ของพนักงานคนนั้นมาก่อน แล้วกรองด้วย .filtered() ภายหลัง
+                # (ตอนนั้น compute field จะคำนวณค่าให้ตามปกติ เพราะไม่ผ่าน SQL)
                 all_versions = self.env['hr.version'].sudo().search([
                     ('employee_id', '=', rec.driver_id.id),
                 ])
@@ -254,8 +232,6 @@ class TelematicsIncentive(models.Model):
                     base_salary = version.wage or 0.0
                     found_from_contract = True
             elif 'hr.contract' in self.env:
-                # fallback สำหรับ Odoo เวอร์ชันเก่ากว่า 19 ที่ยังใช้
-                # hr.contract แบบเดิม
                 contract = self.env['hr.contract'].sudo().search([
                     ('employee_id', '=', rec.driver_id.id),
                     ('state', '=', 'open'),
@@ -292,7 +268,7 @@ class TelematicsIncentive(models.Model):
                     if resp.status_code == 200:
                         data = resp.json()
                         bonus_pct = float(data.get('bonus_pct', 0) or 0)
-                        # ชื่อ field จริงจาก Backend คือ 'incentive_tier' ไม่ใช่ 'tier'
+                        # ชื่อ key จริงจาก Backend คือ 'incentive_tier' ไม่ใช่ 'tier'
                         tier = data.get('incentive_tier')
                     else:
                         _logger.warning(
@@ -314,7 +290,6 @@ class TelematicsIncentive(models.Model):
                     'bonus_last_synced': fields.Datetime.now(),
                 })
             else:
-                # Fallback: คำนวณ tier เองจาก scoring config thresholds
                 tier_fb, pct_fb = rec._local_tier_from_score(return_pct=True)
                 rec.write({
                     'base_salary':       base_salary,
@@ -324,10 +299,9 @@ class TelematicsIncentive(models.Model):
                     'bonus_last_synced': fields.Datetime.now(),
                 })
 
-            # ตาม FDD Tier D ต้องมี "0% + แจ้งเตือน HR" ไม่ใช่แค่ตั้ง
-            # bonus_pct=0 เฉยๆ — ครอบด้วย try/except เพราะเป็นฟีเจอร์เสริม
-            # ไม่ควรทำให้ปุ่ม Confirm/คำนวณโบนัสหลักพังไปด้วยถ้าระบบแจ้ง
-            # เตือนมีปัญหา
+            # Tier D ต้องแจ้งเตือน HR ด้วย ไม่ใช่แค่ตั้ง bonus_pct=0 เฉยๆ —
+            # ครอบด้วย try/except เพราะเป็นฟีเจอร์เสริม ไม่ควรทำให้การคำนวณ
+            # โบนัสหลัก (สำคัญกว่า) พังไปด้วยถ้าระบบแจ้งเตือนมีปัญหา
             if rec.incentive_tier == 'D':
                 try:
                     rec._notify_hr_tier_d()
@@ -338,16 +312,8 @@ class TelematicsIncentive(models.Model):
                     )
 
     def _local_tier_from_score(self, return_pct=False):
-        """คำนวณ Tier จาก avg_score เทียบกับ threshold ของ Scoring Config
-        (ใช้เป็น fallback เท่านั้น เมื่อเรียก Backend ไม่สำเร็จ).
-
-        Args:
-            return_pct (bool): ถ้า True คืนคู่ (tier, bonus_pct) แทนที่จะ
-                คืนแค่ tier เฉยๆ
-
-        Returns:
-            str หรือ tuple: tier ('A'/'B'/'C'/'D') หรือ (tier, pct)
-        """
+        """คำนวณ Tier สำรองในเครื่องจาก threshold ของ Scoring Config —
+        ใช้เฉพาะตอนเรียก Backend ไม่สำเร็จเท่านั้น"""
         self.ensure_one()
         cfg = self.scoring_config_id or self.env['fleet.telematics.scoring.config'].search(
             [('active', '=', True)], limit=1)
@@ -362,42 +328,37 @@ class TelematicsIncentive(models.Model):
         return (tier, pct) if return_pct else tier
 
     def _notify_hr_tier_d(self):
-        """แจ้งเตือน HR/Fleet Manager เมื่อคนขับได้ Tier D (0% โบนัส)
-        ผ่าน 2 ช่องทาง: chatter ของ record นี้เอง และอีเมลตรงถึงกลุ่ม
-        Fleet Manager ที่ทำหน้าที่เป็น HR/ผู้อนุมัติ.
-
-        กันแจ้งซ้ำหลายรอบด้วย flag tier_d_notified — เรียกครั้งเดียวพอ
-        แม้จะกด Refresh from Backend ซ้ำๆ ขณะยังเป็น Tier D อยู่เหมือนเดิม
-        """
+        """แจ้งเตือน HR/Fleet Manager เมื่อพนักงานได้ Tier D (คะแนนต่ำกว่า
+        เกณฑ์ ไม่ได้รับโบนัส) — แจ้ง 2 ช่องทาง: บันทึกลง chatter ของใบโบนัส
+        เอง และส่งแจ้งเตือนตรงถึงผู้ใช้ในกลุ่ม Fleet Manager กันแจ้งซ้ำด้วย
+        flag tier_d_notified"""
         self.ensure_one()
         if self.tier_d_notified:
-            return  # กันแจ้งซ้ำถ้ากด Refresh from Backend หลายรอบ
+            return
 
-        # ใช้ Markup(...).format(...) แทนการต่อ f-string ตรงๆ เพื่อให้ค่าที่
-        # แทรกเข้าไป (ชื่อพนักงาน, period_label) ถูก escape อัตโนมัติ
-        # ป้องกันปัญหาถ้าชื่อพนักงานมีอักขระพิเศษปนอยู่ ในขณะที่ tag HTML
-        # ของ template เองยัง render ปกติ
+        # ใช้ Markup(...).format(...) แทนต่อ f-string ตรงๆ เพื่อให้ค่าที่
+        # แทรกเข้าไป (ชื่อพนักงาน, period_label) ถูก escape อัตโนมัติ กัน
+        # ปัญหาถ้าชื่อพนักงานมีอักขระพิเศษปนอยู่ ในขณะที่ tag HTML ของ
+        # template เอง (<b>, <br/>) ยัง render ได้ปกติ
         body = Markup(
             '⚠️ <b>แจ้งเตือน Tier D — พนักงานคะแนนต่ำกว่าเกณฑ์</b><br/>'
             'พนักงาน: <b>{driver_name}</b><br/>'
             'รอบ: {period}<br/>'
             'คะแนนเฉลี่ย: {score} (ต่ำกว่าเกณฑ์ขั้นต่ำของ Tier C)<br/>'
             'ผลลัพธ์: ไม่ได้รับโบนัสในรอบนี้ (0%)<br/><br/>'
-            'ตาม FDD §12.4 — Tier D ต้องแจ้งเตือน HR/Fleet Manager เพื่อพิจารณา'
-            'ติดตามพฤติกรรมการขับขี่ของพนักงานคนนี้'
+            'Tier D ต้องแจ้งเตือน HR/Fleet Manager เพื่อพิจารณาติดตาม'
+            'พฤติกรรมการขับขี่ของพนักงานคนนี้'
         ).format(
             driver_name=self.driver_id.name,
             period=self.period_label,
             score=f'{self.avg_score:.2f}',
         )
 
-        # 1) บันทึกไว้ใน chatter ของ Incentive record เอง
         self.message_post(body=body)
 
-        # หาผู้ใช้ในกลุ่ม Fleet Manager ผ่าน query จาก res.users โดยตรง
-        # (เช็คชื่อ field ที่มีอยู่จริงก่อนใช้งาน เพราะ Odoo เปลี่ยนชื่อ field
-        # เชื่อมกลุ่มบน res.groups ไปมาระหว่างเวอร์ชัน — 'groups_id' ใน
-        # เวอร์ชันเก่า, 'group_ids' ใน Odoo 19+)
+        # หา user ในกลุ่ม Fleet Manager — query จาก res.users แทนการอ่าน
+        # .users จากกลุ่มตรงๆ (field นั้นถูกถอดออกไปในบาง Odoo version แล้ว)
+        # เช็ค field ที่มีอยู่จริงก่อนใช้งาน กันพังถ้าเปลี่ยนชื่ออีก
         managers_group = self.env.ref('fleet.fleet_group_manager', raise_if_not_found=False)
         manager_users = self.env['res.users']
         if managers_group:
@@ -429,10 +390,55 @@ class TelematicsIncentive(models.Model):
 
         self.tier_d_notified = True
 
+    def _notify_hr_new_drafts_batch(self, period_month, period_year):
+        """แจ้งเตือน HR/Fleet Manager ว่ามีใบโบนัส Draft รอตรวจสอบ — ตาม
+        FDD §12.4 ขั้นตอนที่ 4 ของ Incentive Workflow เรียกครั้งเดียวต่อรอบ
+        cron (ไม่แยกอีเมลต่อพนักงาน) สรุปจำนวนทั้งหมดในข้อความเดียว —
+        คนละฟังก์ชันกับ _notify_hr_tier_d() ที่แจ้งเฉพาะกรณี Tier D"""
+        if not self:
+            return
+
+        driver_names = ', '.join(self.mapped('driver_id.name')[:10])
+        more = f' และอีก {len(self) - 10} คน' if len(self) > 10 else ''
+
+        body = Markup(
+            '📋 <b>มีใบโบนัสรอตรวจสอบ — รอบ {month:02d}/{year}</b><br/>'
+            'สร้าง Draft อัตโนมัติแล้ว <b>{count}</b> ใบ<br/>'
+            'พนักงาน: {names}{more}<br/><br/>'
+            'กรุณาตรวจสอบและกด Confirm ที่เมนู Incentive / Bonus'
+        ).format(
+            month=period_month, year=period_year,
+            count=len(self), names=driver_names, more=more,
+        )
+
+        managers_group = self.env.ref('fleet.fleet_group_manager', raise_if_not_found=False)
+        manager_users = self.env['res.users']
+        if managers_group:
+            User = self.env['res.users']
+            for fname in ('groups_id', 'group_ids'):
+                if fname in User._fields:
+                    manager_users = User.sudo().search([(fname, 'in', managers_group.ids)])
+                    break
+
+        if manager_users:
+            # ใช้ record แรกเป็นตัวโพสต์ (message_notify ต้องมี record เดียว
+            # ไม่ใช่ recordset หลายตัว) พร้อมแนบสรุปทั้งหมดไว้ใน body
+            self[0].message_notify(
+                partner_ids=manager_users.partner_id.ids,
+                body=body,
+                subject=f'📋 Incentive Draft รอตรวจสอบ — {period_month:02d}/{period_year} ({len(self)} ใบ)',
+            )
+        else:
+            _logger.warning(
+                '_notify_hr_new_drafts_batch: ไม่พบผู้ใช้ในกลุ่ม Fleet Manager '
+                'ที่จะแจ้งเตือน (%d draft ใหม่ รอบ %02d/%d)',
+                len(self), period_month, period_year,
+            )
+
     @api.depends('base_salary', 'bonus_pct')
     def _compute_bonus_amount(self):
-        """Bonus (THB) = Base Salary × Bonus % เสมอ — สูตรตายตัว แก้ไข
-        ตรงๆ ไม่ได้ ป้องกันตัวเลขหลุดจากสูตร."""
+        """สูตรตายตัว: Bonus (THB) = Base Salary × Bonus % — เป็น compute
+        field จริง แก้ไขตรงๆ ไม่ได้เลย ป้องกันตัวเลขหลุดจากสูตร"""
         for rec in self:
             rec.bonus_amount = round(rec.base_salary * rec.bonus_pct / 100, 2)
 
@@ -440,9 +446,9 @@ class TelematicsIncentive(models.Model):
         """ปุ่มในฟอร์ม — ดึง bonus_pct ล่าสุดจาก Backend ใหม่ด้วยมือ"""
         self._apply_backend_bonus()
 
-    # ── ล็อกทุกฟิลด์ถาวรเมื่อพ้น Draft (Confirmed/Approved/Paid) ──────
-    # แก้ไขได้ทางเดียวคือกด Reset กลับ Draft ก่อน ป้องกันไม่ให้มีใครแก้
-    # ตัวเลขยอดบาทกลางคัน
+    # ── ล็อกทุกฟิลด์ถาวรเมื่อพ้น Draft ───────────────────────────────────
+    # แก้ไขได้ทางเดียวคือกด Reset กลับ Draft ก่อน ป้องกันไม่ให้มีใครแก้ตัวเลข
+    # ยอดบาทกลางคันหลังยืนยัน/อนุมัติไปแล้ว
     _LOCKED_INCENTIVE_FIELDS = {
         'driver_id', 'date_from', 'date_to', 'scoring_config_id', 'note',
         'total_trips', 'total_distance_km', 'avg_score', 'min_score',
@@ -452,12 +458,6 @@ class TelematicsIncentive(models.Model):
     }
 
     def write(self, vals):
-        """บล็อกการแก้ไขฟิลด์ที่ล็อกไว้ (_LOCKED_INCENTIVE_FIELDS) ถ้าใบ
-        โบนัสนี้ผ่านพ้น state='draft' ไปแล้ว.
-
-        Raises:
-            UserError: ถ้าพยายามแก้ไขฟิลด์ที่ล็อกไว้ในขณะที่ state != 'draft'
-        """
         touched = self._LOCKED_INCENTIVE_FIELDS.intersection(vals.keys())
         if touched:
             for rec in self:
@@ -470,18 +470,10 @@ class TelematicsIncentive(models.Model):
         return super().write(vals)
 
     def action_export_to_appraisal(self):
-        """ส่งสรุปผลโบนัสไปบันทึกในประวัติพนักงาน (chatter ของ hr.employee)
-        และผูกเข้า appraisal ล่าสุด ถ้ามีโมดูล hr_appraisal ติดตั้งอยู่.
-
-        ไม่ผูก hard-dependency กับ hr_appraisal (อาจไม่ได้ติดตั้ง) — เขียน
-        สรุปลง chatter ของพนักงานเสมอเป็นหลัก
-
-        Returns:
-            dict: action แสดง notification สำเร็จ
-
-        Raises:
-            UserError: ถ้าใบโบนัสยังไม่ผ่าน state 'approved' หรือ 'paid'
-        """
+        """ส่งสรุปผลไปที่ประวัติพนักงาน (chatter ของ hr.employee — มีอยู่
+        แล้วทุก Odoo ไม่ต้องพึ่งโมดูลเสริม) และถ้ามีโมดูล hr_appraisal
+        ติดตั้งอยู่ด้วยจะโพสต์ซ้ำลง appraisal ล่าสุดของพนักงานคนนั้นให้
+        อัตโนมัติ ต้อง Approve ก่อนเท่านั้นถึงจะกดได้"""
         self.ensure_one()
         if self.state not in ('approved', 'paid'):
             raise UserError(
@@ -496,8 +488,6 @@ class TelematicsIncentive(models.Model):
         )
         self.driver_id.message_post(body=summary)
 
-        # ถ้ามีโมดูล hr_appraisal ติดตั้งอยู่ (optional) ผูกเข้า appraisal
-        # ล่าสุดของพนักงานคนนี้ด้วย — ถ้าไม่มีโมดูลนี้ก็แค่ข้ามไปเงียบๆ
         Appraisal = self.env.get('hr.appraisal')
         appraisal_linked = False
         if Appraisal is not None:
@@ -525,7 +515,7 @@ class TelematicsIncentive(models.Model):
 
     def action_confirm(self):
         """Draft → Confirmed — ดึง/อัปเดต bonus_pct จาก Backend ครั้งสุดท้าย
-        ก่อนล็อกตัวเลข แล้วบันทึก audit log ลง chatter."""
+        ก่อนล็อกตัวเลข"""
         for rec in self:
             if rec.state == 'draft':
                 rec._apply_backend_bonus()
@@ -539,7 +529,7 @@ class TelematicsIncentive(models.Model):
                 )
 
     def action_approve(self):
-        """Confirmed → Approved — บันทึกผู้อนุมัติและ audit log ลง chatter."""
+        """Confirmed → Approved"""
         for rec in self:
             if rec.state == 'confirmed':
                 rec.state       = 'approved'
@@ -553,7 +543,7 @@ class TelematicsIncentive(models.Model):
                 )
 
     def action_mark_paid(self):
-        """Approved → Paid — บันทึก audit log ลง chatter ว่าจ่ายเงินแล้ว."""
+        """Approved → Paid"""
         for rec in self:
             if rec.state == 'approved':
                 rec.state = 'paid'
@@ -565,8 +555,7 @@ class TelematicsIncentive(models.Model):
                 )
 
     def action_reset(self):
-        """Confirmed/Approved → Draft — ปลดล็อกให้แก้ไขข้อมูลได้ใหม่
-        พร้อมล้างผู้อนุมัติเดิมและบันทึก audit log ลง chatter."""
+        """Confirmed/Approved → กลับ Draft (ปลดล็อกให้แก้ไขได้อีก)"""
         for rec in self:
             if rec.state in ('confirmed', 'approved'):
                 old_state        = rec.state
@@ -581,15 +570,8 @@ class TelematicsIncentive(models.Model):
 
     @api.model
     def _cron_calculate_monthly_incentive(self):
-        """สร้างใบโบนัส Draft อัตโนมัติทุกวันที่ 1 ของเดือน สำหรับคนขับ
-        ทุกคนที่มี trip ในเดือนปฏิทินก่อนหน้า.
-
-        สร้างด้วย date_from/date_to ที่ครอบคลุมเต็มเดือนปฏิทินก่อนหน้า
-        (ไม่ใช่รอบตัดวิกแบบกำหนดเอง — อันนั้นต้องสร้างด้วยมือผ่านฟอร์ม)
-        กันสร้างซ้ำด้วยการเช็คว่ามี record ของคนขับ+ช่วงวันที่นี้อยู่แล้ว
-        หรือยัง ก่อน create() ทุกครั้ง (คนขับแต่ละคนมีได้เพียง 1 record
-        ต่อรอบ)
-        """
+        """สร้างใบโบนัส Draft ให้พนักงานที่มีทริปในเดือนก่อนหน้าอัตโนมัติ
+        ทุกวันที่ 1 ของเดือน (ครอบคลุมเต็มเดือนปฏิทินก่อนหน้าเสมอ)"""
         today = date.today()
         if today.month == 1:
             period_year, period_month = today.year - 1, 12
@@ -600,7 +582,7 @@ class TelematicsIncentive(models.Model):
         date_to = (
             date(period_year + 1, 1, 1) if period_month == 12
             else date(period_year, period_month + 1, 1)
-        ) - timedelta(days=1)  # date_to เป็น "วันสุดท้ายที่รวมอยู่ในช่วง"
+        ) - timedelta(days=1)  # date_to คือวันสุดท้ายที่ "รวม" อยู่ในช่วง
 
         cfg = self.env['fleet.telematics.scoring.config'].sudo().search(
             [('active', '=', True)], limit=1)
@@ -615,13 +597,14 @@ class TelematicsIncentive(models.Model):
         ])
 
         created = 0
+        created_records = self.browse()
         for driver in logs.mapped('driver_id'):
             if self.search([
                 ('driver_id', '=', driver.id),
                 ('date_from', '=', str(date_from)),
                 ('date_to',   '=', str(date_to)),
             ], limit=1):
-                continue  # dedup — driver แต่ละคนมีได้เพียง 1 record ต่อรอบ
+                continue  # พนักงานคนนี้มีใบของรอบนี้อยู่แล้ว ข้าม
 
             new_rec = self.create({
                 'driver_id':         driver.id,
@@ -631,7 +614,22 @@ class TelematicsIncentive(models.Model):
                 'state':             'draft',
             })
             new_rec._apply_backend_bonus()
+            created_records |= new_rec
             created += 1
+
+        # ตาม FDD §12.4 ขั้นตอนที่ 4 ของ Incentive Workflow: "ส่ง Email แจ้ง
+        # HR Manager ว่ามี Incentive รอ review" ทุกครั้งที่ cron สร้าง draft
+        # — ส่งเป็นสรุปเดียวต่อรอบ cron (ไม่ใช่แยกอีเมลต่อพนักงาน กันสแปม
+        # ถ้ามีพนักงานจำนวนมาก) ครอบด้วย try/except กันไม่ให้การแจ้งเตือน
+        # (ฟีเจอร์เสริม) ทำให้การสร้าง draft หลัก (สำคัญกว่า) ล้มเหลวไปด้วย
+        if created_records:
+            try:
+                created_records._notify_hr_new_drafts_batch(period_month, period_year)
+            except Exception:
+                _logger.exception(
+                    '_notify_hr_new_drafts_batch ล้มเหลว — ข้ามไป ไม่ให้กระทบ '
+                    'การสร้าง draft หลัก'
+                )
 
         _logger.info(
             'cron_monthly_incentive: สร้าง %d records สำหรับ %02d/%d',

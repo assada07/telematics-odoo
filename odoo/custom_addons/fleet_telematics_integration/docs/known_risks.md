@@ -60,3 +60,24 @@ Backend ไม่ใช่ Odoo)
 เดิมแถบเตือน Tier D ขึ้นตั้งแต่สร้าง record ใหม่ก่อนเลือก Driver เลย (เพราะ
 field มี default='D') แก้แล้วให้เช็คเพิ่มว่าต้องเลือก driver_id ก่อนด้วย
 พร้อมเพิ่ม validation บังคับเลือก Driver ก่อนกด Refresh/Confirm
+
+## 9. ✅ แก้แล้ว — 3 จุดที่ขาดจริงเทียบกับ FDD (พบจากการตรวจ field-by-field)
+ไล่เทียบ FDD §12.3-12.5 กับโค้ดจริงทีละ field แล้วพบ 3 จุดที่ขาดจริง (ไม่ใช่
+ตีความผิด) — แก้ครบแล้วทั้งหมด:
+- **History section หายไป** (§12.5): เพิ่ม `created_date`, `last_used_date`,
+  `total_trips_calculated` บน Scoring Config พร้อมฟังก์ชัน `_track_usage()`
+  อัปเดตอัตโนมัติทุกครั้งที่ `_cron_sync_trips()` sync ทริปสำเร็จ
+- **Tier D ไม่มี field ปรับได้** (§12.3): เพิ่ม `tier_d_min_score`,
+  `tier_d_bonus_pct` เป็น field จริง (เดิม hardcode ไว้ในลอจิก) ล็อกเมื่อ
+  Active=True เหมือนฟิลด์เกณฑ์อื่น พร้อมส่งไป Backend ใน
+  `_build_config_payload()` ด้วย
+- **ไม่แจ้ง HR ทุกครั้งที่มี draft ใหม่** (§12.4 ขั้นตอน 4): เดิมมีแค่
+  `_notify_hr_tier_d()` แจ้งเฉพาะกรณี Tier D — เพิ่ม
+  `_notify_hr_new_drafts_batch()` แจ้งสรุปทุกครั้งที่ cron รายเดือนสร้าง
+  draft ใหม่ (ส่งเป็นสรุปเดียวต่อรอบ ไม่แยกอีเมลต่อพนักงาน)
+
+**ยังไม่ตัดสินใจ:** Unique constraint ของ Incentive เปลี่ยนจาก
+`driver_id + period_month + period_year` (ตามที่ FDD ระบุ) เป็น
+`driver_id + date_from + date_to` (ตามบรีฟภายหลังที่รองรับรอบตัดวิกไม่ตรง
+เดือนปฏิทิน) — เป็นการเบี่ยงจาก FDD โดยตั้งใจ ยังไม่ได้ยืนยันกับ Supervisor
+ว่าจะใช้ตามบรีฟใหม่นี้ต่อไป หรือย้อนกลับให้ตรงเอกสารเดิม

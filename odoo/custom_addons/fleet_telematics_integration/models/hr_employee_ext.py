@@ -1,22 +1,28 @@
-"""hr_employee_ext.py
-
-ขยายโมเดล hr.employee เพื่อเพิ่มฟิลด์เงินเดือนฐานสำรอง สำหรับใช้คำนวณ
-Incentive/Bonus ของระบบ Fleet Telematics ในกรณีที่ระบบไม่ได้ติดตั้งโมดูล
-hr_contract (โมดูลนี้ไม่ได้ประกาศ hr_contract เป็น hard dependency)
-"""
+# ==============================================================================
+# models/hr_employee_ext.py
+#
+# ต่อยอดโมเดล hr.employee (พนักงาน) เพิ่มช่องเก็บฐานเงินเดือนสำรอง
+# สำหรับใช้คำนวณโบนัสของระบบ Fleet Telematics โดยเฉพาะ
+#
+# ใช้เมื่อไหร่: กรณีระบบไม่มีข้อมูลสัญญาจ้าง (hr.version ใน Odoo 19 หรือ
+# hr.contract ในเวอร์ชันเก่ากว่า) ให้ผูกกับพนักงานคนนั้น ระบบจะดึงเงินเดือน
+# จากช่องนี้แทน โดยกรอกครั้งเดียวที่นี่ ใช้ได้ทุกเดือนโดยไม่ต้องพิมพ์ซ้ำใน
+# ใบโบนัสแต่ละใบ (ดูลำดับการดึงค่าเต็มๆ ใน models/telematics_incentive.py
+# ฟังก์ชัน _apply_backend_bonus)
+# ==============================================================================
 from odoo import models, fields
 
 
 class HrEmployeeTelematicsExt(models.Model):
-    """ส่วนขยายของ hr.employee: เพิ่มฟิลด์เงินเดือนฐานสำหรับคำนวณโบนัส."""
-
+    """ต่อยอด hr.employee เพิ่ม field สำหรับระบบ Fleet Telematics"""
     _inherit = 'hr.employee'
 
     telematics_base_salary = fields.Float(
         string='Base Salary (สำหรับคำนวณโบนัส Telematics)',
         digits=(10, 2),
-        help='เงินเดือนฐานสำหรับคำนวณ Incentive/Bonus ของระบบ Fleet '
-             'Telematics โดยเฉพาะ ใช้เป็นค่า fallback เมื่อระบบไม่มีโมดูล '
-             'hr_contract ติดตั้งอยู่ — ถ้ามี hr_contract และมีสัญญาจ้างที่ '
-             'active อยู่ ระบบจะใช้ค่าจาก hr.contract.wage เป็นหลักก่อนเสมอ',
+        help='ฐานเงินเดือนสำรองสำหรับคำนวณ Incentive/Bonus ของระบบ Fleet '
+             'Telematics เท่านั้น — ใช้เมื่อไม่มีข้อมูลสัญญาจ้าง (hr.version/'
+             'hr.contract) ของพนักงานคนนี้ในระบบ ถ้ามีข้อมูลสัญญาจ้างจริง '
+             'ระบบจะดึงจากตรงนั้นเป็นหลักก่อนเสมอ ฟิลด์นี้เป็นแค่ทางเลือก '
+             'สำรองลำดับถัดไป'
     )

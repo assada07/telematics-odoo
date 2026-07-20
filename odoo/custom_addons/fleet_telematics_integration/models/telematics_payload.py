@@ -1,10 +1,10 @@
-"""models/telematics_payload.py
-
-กล่องจดหมายรับ API (Payload Inbox) — เก็บทุก request ดิบที่ Backend ยิงเข้า
-มาที่ webhook ของ Odoo ไว้เสมอ ไม่ว่าข้อมูลจะถูก format ครบหรือไม่ก็ตาม
-เพื่อให้มีหลักฐานไว้ตรวจสอบย้อนหลังกับทีม Backend ได้ ไม่ให้ข้อมูลหายไป
-เงียบๆ เมื่อเกิดปัญหา (เช่น field ขาด, APIKEY ผิด, JSON ผิด format)
-"""
+# ==============================================================================
+# models/telematics_payload.py
+#
+# กล่องจดหมายรับ API (Payload Inbox) — เก็บทุก request ดิบๆ ที่ Backend ยิง
+# เข้ามา ไม่ว่าข้อมูลจะถูกหรือผิด format ก็ตาม เพื่อใช้เป็นหลักฐานตรวจสอบ
+# ย้อนหลังกับทีม Backend ได้เสมอ ไม่ให้ข้อมูลที่ผิดพลาดหายไปเงียบๆ
+# ==============================================================================
 import json
 import logging
 
@@ -14,8 +14,7 @@ _logger = logging.getLogger(__name__)
 
 
 class TelematicsPayload(models.Model):
-    """บันทึก 1 record ต่อ 1 HTTP request ที่ Backend ยิงเข้ามา."""
-
+    """บันทึก request ดิบทุกครั้งที่มีคนยิงเข้ามาที่ webhook ของระบบ"""
     _name = 'fleet.telematics.payload'
     _description = 'Telematics Incoming Payload (API Inbox)'
     _order = 'received_at desc'
@@ -33,14 +32,14 @@ class TelematicsPayload(models.Model):
         index=True,
     )
 
-    # ── ข้อมูล HTTP request ──────────────────────────────────────
+    # ── HTTP meta ────────────────────────────────────────────────
     endpoint     = fields.Char(string='Endpoint',     readonly=True)
     http_method  = fields.Char(string='HTTP Method',  readonly=True)
     remote_addr  = fields.Char(string='Remote IP',    readonly=True)
     content_type = fields.Char(string='Content-Type', readonly=True)
     http_headers = fields.Text(string='HTTP Headers', readonly=True)
 
-    # ── เนื้อหา payload ดิบ ──────────────────────────────────────
+    # ── Raw payload ──────────────────────────────────────────────
     raw_payload = fields.Text(string='Raw Payload', readonly=True)
 
     payload_pretty = fields.Text(
@@ -54,7 +53,7 @@ class TelematicsPayload(models.Model):
         store=True,
     )
 
-    # ── สถานะการประมวลผล ─────────────────────────────────────────
+    # ── ผลการประมวลผล ────────────────────────────────────────────
     state = fields.Selection([
         ('new',       '🆕 New'),
         ('processed', '✅ Processed'),
@@ -73,20 +72,16 @@ class TelematicsPayload(models.Model):
 
     @api.depends('received_at', 'endpoint')
     def _compute_display_ref(self):
-        """สร้างชื่ออ้างอิงของ record จากเวลาที่รับ + id เช่น
-        'PAYLOAD/20260717-103000/42' เพื่อให้หาดูใน list view ได้ง่าย."""
+        """สร้างชื่ออ้างอิงอ่านง่าย เช่น PAYLOAD/20260717-093000/42"""
         for rec in self:
             ts = rec.received_at or fields.Datetime.now()
             rec.display_ref = f'PAYLOAD/{ts:%Y%m%d-%H%M%S}/{rec.id or "new"}'
 
     @api.depends('raw_payload')
     def _compute_payload_pretty(self):
-        """แปลง raw_payload (string ดิบ) เป็น JSON ที่จัดรูปแบบสวยงามไว้ดู.
-
-        ถ้า parse เป็น JSON ไม่ได้ (ข้อมูลผิด format) ให้แสดง raw string
-        เดิมไว้เฉยๆ และตั้ง payload_valid_json = False เพื่อให้ผู้ใช้เห็น
-        ทันทีว่า payload นี้มีปัญหาตั้งแต่ต้นทาง
-        """
+        """ลองแปลง raw_payload เป็น JSON สวยงามให้อ่านง่ายในหน้าจอ ถ้าแปลง
+        ไม่ได้ (ไม่ใช่ JSON ที่ถูกต้อง) ให้แสดงข้อความดิบไว้เฉยๆ พร้อม flag
+        payload_valid_json = False ไว้เตือน"""
         for rec in self:
             if rec.raw_payload:
                 try:
@@ -100,15 +95,12 @@ class TelematicsPayload(models.Model):
                 rec.payload_pretty = ''
                 rec.payload_valid_json = False
 
-    # ── ปุ่มเปลี่ยนสถานะด้วยมือ (สำหรับ Admin ตรวจสอบย้อนหลัง) ─────
+    # ── ปุ่มจัดการ state ─────────────────────────────────────────
     def action_mark_processed(self):
-        """ทำเครื่องหมายว่า payload นี้ประมวลผลเรียบร้อยแล้ว."""
         self.write({'state': 'processed'})
 
     def action_mark_ignored(self):
-        """ทำเครื่องหมายว่า payload นี้ไม่ต้องประมวลผล (เช่น ข้อมูลซ้ำ/ทดสอบ)."""
         self.write({'state': 'ignored'})
 
     def action_mark_error(self):
-        """ทำเครื่องหมายว่า payload นี้มีปัญหา ต้องตรวจสอบเพิ่มเติม."""
         self.write({'state': 'error'})

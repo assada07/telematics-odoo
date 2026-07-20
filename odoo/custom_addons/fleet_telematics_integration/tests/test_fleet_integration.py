@@ -1,14 +1,11 @@
-"""tests/test_fleet_integration.py
-
-Unit test ของโมดูล fleet_telematics_integration ครอบคลุม UC-01, UC-02,
-UC-04, UC-09, UC-10, UC-11, UC-12, Maintenance Triggers, Event Logs
-Lockdown, Vehicle Trip History Wizard, Vehicle Aggregated Stats, และ
-Data Retention
-
-วิธีรัน:
-    odoo-bin -c odoo.conf -d <db> --test-enable --stop-after-init \\
-             --test-tags /fleet_telematics_integration
-"""
+# ==============================================================================
+# tests/test_fleet_integration.py
+# Odoo TestCase รวม UC-01, UC-02, UC-04 ในไฟล์เดียว
+#
+# วิธีรัน:
+#   odoo-bin -c odoo.conf -d <db> --test-enable --stop-after-init \
+#            --test-tags /fleet_telematics_integration
+# ==============================================================================
 
 from unittest.mock import patch, MagicMock
 from datetime import datetime, date, timezone, timedelta
@@ -18,11 +15,18 @@ from odoo.tests.common import TransactionCase
 from odoo.exceptions import ValidationError, UserError
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# เพิ่ม 2026-07-16: Odoo 19 เปลี่ยนชื่อ field many2many บน res.users จาก
+# `groups_id` เป็น `group_ids` (ยืนยันจาก error จริงตอนรัน test บน Odoo 19
+# instance: "KeyError: 'groups_id'" / "ValueError: Invalid field 'groups_id'
+# in 'res.users'") — เขียน helper ตรวจหาชื่อ field ที่ถูกต้องแบบไดนามิก
+# แทนที่จะ hardcode ชื่อใดชื่อหนึ่งตรงๆ กันพังอีกถ้า Odoo เปลี่ยนชื่ออีกใน
+# อนาคต (ใช้ pattern เดียวกับที่แก้ไปแล้วใน telematics_incentive.py /
+# telematics_log.py ตอนเจอปัญหาเดียวกันฝั่ง res.groups.users)
+# ══════════════════════════════════════════════════════════════════════════════
 def _users_groups_field(env):
     """คืนชื่อ field many2many ที่ถูกต้องบน res.users สำหรับผูกกับ res.groups
-    ('group_ids' ใน Odoo 19+, 'groups_id' ในเวอร์ชันเก่ากว่า) — ตรวจหาแบบ
-    ไดนามิกแทนที่จะ hardcode ชื่อใดชื่อหนึ่ง กันพังถ้า Odoo เปลี่ยนชื่ออีก
-    ในอนาคต."""
+    ('group_ids' ใน Odoo 19+, 'groups_id' ในเวอร์ชันเก่ากว่า)"""
     User = env['res.users']
     for fname in ('groups_id', 'group_ids'):
         if fname in User._fields:
@@ -34,8 +38,12 @@ def _users_groups_field(env):
     )
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Shared Setup — ข้อมูลพื้นฐานที่ใช้ร่วมกันทุก UC
+# ══════════════════════════════════════════════════════════════════════════════
+
 class FleetTelematicsBase(TransactionCase):
-    """Base class: สร้าง brand/model/vehicle/driver ที่ใช้ร่วมกันทุก test class."""
+    """Base class: สร้าง brand/model/vehicle/driver ที่ใช้ร่วมกัน"""
 
     @classmethod
     def setUpClass(cls):
@@ -58,8 +66,9 @@ class FleetTelematicsBase(TransactionCase):
         ICP.set_param('fleet_telematics.mtd_api_url', 'http://test-backend:8001')
         ICP.set_param('fleet_telematics.mtd_api_key', 'TEST-KEY')
 
-        # ต้องอยู่กลุ่ม Fleet Manager เพื่อทดสอบ action_approve() ของ
-        # fleet.telematics.scoring.config (ดู TestUC02ScoringConfig)
+        # เพิ่ม 2026-07-08: ต้องอยู่กลุ่ม Fleet Manager เพื่อทดสอบ action_approve()
+        # ของ fleet.telematics.scoring.config (ดู TestUC02ScoringConfig)
+        # แก้ 2026-07-16: groups_id → group_ids ใน Odoo 19 (ดู _users_groups_field ด้านบน)
         cls.env.user.write({
             _users_groups_field(cls.env): [(4, cls.env.ref('fleet.fleet_group_manager').id)]
         })
@@ -320,7 +329,7 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
         self.assertTrue(c2.active)
         self.assertFalse(c1.active)
 
-    # ── ทดสอบกฎความเร็วแยกโซน ────────────────────────────────────
+    # ── เพิ่ม 2026-07-08: ทดสอบกฎความเร็วแยกโซน (บรีฟข้อ 2) ────────────────
     def test_10_speed_limit_zone_defaults(self):
         """ค่าเริ่มต้น speed_limit_bkk=80, speed_limit_upcountry=90"""
         cfg = self._make_scoring('UC02-10', active=False)
@@ -348,7 +357,7 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
         self.assertEqual(payload['speed_limit_bkk'], 80.0)
         self.assertEqual(payload['speed_limit_upcountry'], 90.0)
 
-    # ── ทดสอบ Read-only lock เมื่อ Active/Push แล้ว ──────────────
+    # ── เพิ่ม 2026-07-08: ทดสอบ Read-only lock เมื่อ Active/Push แล้ว (ข้อ 3) ──
     def test_14_edit_locked_when_active_raises(self):
         """แก้ไข field เกณฑ์คะแนนตอน active=True → ต้อง UserError"""
         cfg = self._make_scoring('UC02-14', active=True)
@@ -363,8 +372,8 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
         self.assertEqual(cfg.score_base, 88.0)
 
     def test_16_edit_allowed_after_push_while_inactive(self):
-        """เคย Push แล้ว (last_push_at มีค่า) แต่ active=False → ต้องยังแก้ไข/
-        Push ซ้ำได้เรื่อยๆ (ไม่ล็อกถาวรแค่เพราะเคย push)"""
+        """แก้ 2026-07-09 ตามบรีฟใหม่: เคย Push แล้ว (last_push_at มีค่า) แต่
+        active=False → ต้องยังแก้ไข/Push ซ้ำได้เรื่อยๆ (ไม่ล็อกถาวรแล้ว)"""
         cfg = self._make_scoring('UC02-16', active=False)
         cfg.write({'last_push_at': '2026-07-08 10:00:00'})
         cfg.write({'harsh_brake_deduct': 1.0})   # ต้องไม่ raise
@@ -376,9 +385,11 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
         self.assertFalse(cfg.is_locked)
         cfg.write({'last_push_at': '2026-07-08 10:00:00'})
         self.assertFalse(cfg.is_locked)   # เคย push แต่ inactive → ไม่ล็อก
-        # ป้องกัน "Active ซ้อน": deactivate config อื่นที่อาจ active ค้างอยู่
-        # ก่อน (เช่นจากการทดสอบมือผ่าน UI มาก่อนหน้า) ไม่งั้นจะชนกับ
-        # constraint _check_single_active ทันที
+        # แก้ 2026-07-17: _make_scoring() ป้องกัน "Active ซ้อน" ให้อัตโนมัติ
+        # แค่ตอนสร้างใหม่ผ่าน helper เท่านั้น — ตรงนี้เรียก .write() ตรงๆ
+        # ทีหลัง ถ้าฐานข้อมูลมี config อื่น Active ค้างอยู่ก่อน (เช่นจากการ
+        # ทดสอบมือผ่าน UI จริงมาก่อนหน้า) จะชนกับ constraint ทันที ต้อง
+        # deactivate ของเดิมก่อนเหมือนที่ _make_scoring ทำให้ตอน create
         self.env['fleet.telematics.scoring.config'].search(
             [('active', '=', True), ('id', '!=', cfg.id)]).write({'active': False})
         cfg.write({'active': True})
@@ -401,7 +412,7 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
         self.assertFalse(cfg.active)
         self.assertFalse(cfg.is_locked)
 
-    # ── ทดสอบ Approval workflow ──────────────────────────────────
+    # ── เพิ่ม 2026-07-08: ทดสอบ Approval workflow (บรีฟ "กำหนดผู้อนุมัติ") ──
     def test_18_push_without_approval_raises(self):
         """Push Config โดยยังไม่มี approved_by_id → ต้อง UserError ก่อนยิง API เลย"""
         cfg = self._make_scoring('UC02-18', active=False)
@@ -428,22 +439,68 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
         self.assertTrue(cfg.last_push_at)
         self.assertIn('OK', cfg.last_push_status)
 
+    # ── เพิ่มตาม FDD §12.3/§12.5: Tier D fields + History tracking ────────
+    def test_21_tier_d_fields_exist_and_editable(self):
+        """Tier D ต้องมี field ปรับได้เหมือน A/B/C (ไม่ใช่ hardcode) และ
+        ล็อกเมื่อ Active=True เหมือนฟิลด์เกณฑ์อื่น"""
+        cfg = self._make_scoring('UC02-21', active=False)
+        cfg.write({'tier_d_bonus_pct': 2.5})
+        self.assertEqual(cfg.tier_d_bonus_pct, 2.5)
+
+        self.env['fleet.telematics.scoring.config'].search(
+            [('active', '=', True), ('id', '!=', cfg.id)]).write({'active': False})
+        cfg.write({'active': True})
+        with self.assertRaises(UserError):
+            cfg.write({'tier_d_bonus_pct': 5.0})
+
+    def test_22_tier_d_bonus_negative_raises(self):
+        """% โบนัส Tier D ติดลบต้อง raise"""
+        with self.assertRaises(ValidationError):
+            self._make_scoring('UC02-22', active=False, tier_d_bonus_pct=-1.0)
+
+    def test_23_history_created_date_auto_set(self):
+        """created_date ต้องตั้งค่าอัตโนมัติตอนสร้าง record ใหม่"""
+        cfg = self._make_scoring('UC02-23', active=False)
+        self.assertTrue(cfg.created_date)
+
+    def test_24_history_starts_zero(self):
+        """total_trips_calculated ต้องเริ่มที่ 0 ตอนสร้างใหม่"""
+        cfg = self._make_scoring('UC02-24', active=False)
+        self.assertEqual(cfg.total_trips_calculated, 0)
+        self.assertFalse(cfg.last_used_date)
+
+    def test_25_track_usage_updates_active_config(self):
+        """_track_usage() ต้องอัปเดตเฉพาะ config ที่ Active อยู่เท่านั้น"""
+        cfg = self._make_scoring('UC02-25', active=True)
+        Config = self.env['fleet.telematics.scoring.config']
+        Config._track_usage(count=3)
+        self.assertEqual(cfg.total_trips_calculated, 3)
+        self.assertTrue(cfg.last_used_date)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # UC-04 — GPS Poll + Dedup + Batch  (telematics_log.py section [I]–[N])
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestUC04TripSync(FleetTelematicsBase):
-    """ทดสอบ GPS Poll + Dedup + Batch (UC-04) — models/telematics_log.py.
+    """
+    แก้ 2026-07-17: เขียนใหม่ทั้งคลาส — เวอร์ชันเดิมอ้างอิงเมธอด
+    _get_poll_window()/_filter_new_trips() ที่ไม่มีอยู่จริงในโค้ด (ถูกออกแบบ
+    ไว้ก่อน implement จริง แล้วไม่เคยอัปเดต test ตาม) และ mock ผิด HTTP verb
+    (patch requests.get ทั้งที่โค้ดจริงยิง requests.post) ยืนยันจาก error จริง
+    ตอนรันบน Odoo 19: AttributeError ทั้งคู่ + "External requests verboten"
+    (เพราะ mock ไม่ตรง เลยยิง POST จริงหลุดออกไป)
 
-    ครอบคลุม:
+    ครอบคลุมของจริงตามโค้ดปัจจุบัน:
       - _fetch_trips_batch() ยิง POST /api/v1/webhook/odoo-sync ถูก endpoint/body
       - _build_trip_vals() แปลง dict (schema จริงจาก Backend) → vals ถูกต้อง
       - _build_trip_vals() ไม่พบรถ (ทั้ง vehicle_id และ device_id) → คืน {}
       - _cron_sync_trips() สร้าง trip ใหม่ (มี POST+PATCH mock ครบ)
       - _cron_sync_trips() ไม่ duplicate เมื่อรัน 2 รอบ
       - _cron_sync_trips() write existing trip แทน create
-      - _cron_sync_trips() บันทึก trip_last_sync_timestamp ลง ir.config_parameter
+      - _cron_sync_trips() บันทึก trip_last_sync_timestamp (ชื่อ param จริง
+        คือ fleet_telematics.trip_last_sync_timestamp ไม่ใช่ trip_last_poll_ts
+        แบบที่เทสเดิมเช็ค)
       - UNIQUE(external_trip_id) บังคับจริงผ่าน models.Constraint (Odoo 19)
       - _cron_sync_trips() เมื่อไม่มี API URL → ไม่ raise
     """
@@ -610,8 +667,12 @@ class TestUC04TripSync(FleetTelematicsBase):
 
     def test_09_sql_unique_constraint_on_external_trip_id(self):
         """Dedup ชั้นสุดท้าย: ต้องมี UNIQUE บน external_trip_id บังคับใช้จริง
-        ที่ระดับฐานข้อมูล (ทดสอบเชิงพฤติกรรม — สร้างซ้ำแล้วดูว่า raise จริง
-        แทนที่จะเช็ค metadata ภายในของ constraint object)"""
+        แก้ 2026-07-17: Odoo 19 เลิกใช้ _sql_constraints (list of tuple) แล้ว
+        (ยืนยันจาก warning จริงตอน module load) เปลี่ยนโค้ดจริงไปใช้
+        models.Constraint() แทน — แต่ไม่มั่นใจ 100% ว่า attribute ภายในของ
+        Constraint object ชื่ออะไรแน่ (เช่น .string/.definition) จึงเลี่ยงไป
+        ทดสอบเชิงพฤติกรรมแทน (สร้างซ้ำจริงแล้วดูว่า error จริงไหม) แม่นยำ
+        กว่าการเดา attribute name ภายใน"""
         Log = self.env['fleet.telematics.log']
         Log.create({
             'external_trip_id': 'UNIQUE-TEST-01',
@@ -639,11 +700,13 @@ class TestUC04TripSync(FleetTelematicsBase):
 
 # ══════════════════════════════════════════════════════════════════════════════
 # UC-10 — Audit Log บน Incentive state change (models/telematics_incentive.py)
+#   เพิ่มใหม่ 2026-07-06: เดิม UC-10 ไม่มี test เลย ทั้งที่ FDD §13 ระบุว่า
+#   "audit log ทุก state change" เป็น requirement ที่ต้องผ่าน
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestUC10IncentiveAuditLog(FleetTelematicsBase):
     """ตรวจว่าทุกครั้งที่ state ของ Incentive เปลี่ยน ต้องมี message_post
-    (chatter log) บันทึกไว้อัตโนมัติ — audit log ทุก state change"""
+    (chatter log) บันทึกไว้อัตโนมัติ — ตาม FDD §13 "audit log ทุก state change" """
 
     def _make_incentive(self, **kw):
         vals = dict(
@@ -729,7 +792,7 @@ class TestUC10IncentiveAuditLog(FleetTelematicsBase):
         # mail.thread tracking สร้าง message แยกจาก manual message_post ใน action_confirm
         self.assertGreaterEqual(len(inc.message_ids), n_before)
 
-    # ── ทดสอบ date_from/date_to (รอบวันที่แบบยืดหยุ่น) ───────────
+    # ── เพิ่ม 2026-07-09: ทดสอบ date_from/date_to แทน period_month/year ────
     def test_08_period_label_shows_date_range(self):
         """period_label ต้องแสดงเป็นช่วงวันที่ ไม่ใช่ MM/YYYY แบบเดิม"""
         inc = self._make_incentive(
@@ -756,7 +819,7 @@ class TestUC10IncentiveAuditLog(FleetTelematicsBase):
         with self.assertRaises(Exception):
             self._make_incentive(date_from=date(2026, 5, 1), date_to=date(2026, 5, 31))
 
-    # ── ทดสอบ bonus_amount เป็น compute field ผูกสูตรตายตัว ──────
+    # ── เพิ่ม 2026-07-09: ทดสอบ bonus_amount เป็น compute field จริง ───────
     def test_12_bonus_amount_computed_from_formula(self):
         """bonus_amount ต้อง = base_salary * bonus_pct / 100 เสมอ (คำนวณเอง)"""
         inc = self._make_incentive(base_salary=30000.0, bonus_pct=10.0)
@@ -769,7 +832,7 @@ class TestUC10IncentiveAuditLog(FleetTelematicsBase):
         inc.write({'bonus_pct': 10.0})
         self.assertEqual(inc.bonus_amount, 2000.0)
 
-    # ── ทดสอบล็อกฟอร์มถาวรเมื่อพ้น Draft ──────────────────────────
+    # ── เพิ่ม 2026-07-09: ทดสอบล็อกฟอร์มถาวรเมื่อพ้น Draft (บรีฟข้อ 5) ──────
     def test_14_edit_blocked_after_confirm(self):
         """แก้ไข field ผลงาน/โบนัส หลัง Confirm ไปแล้ว → ต้อง UserError"""
         inc = self._make_incentive()
@@ -800,14 +863,25 @@ class TestUC10IncentiveAuditLog(FleetTelematicsBase):
         inc.action_export_to_appraisal()
         self.assertGreater(len(self.employee.message_ids), n_before)
 
+    def test_18_notify_hr_new_drafts_batch_posts_message(self):
+        """_notify_hr_new_drafts_batch() ต้องบันทึกข้อความลง chatter ของ
+        record แรกในกลุ่ม (ตาม FDD §12.4 ขั้นตอน 4: แจ้ง HR ทุกครั้งที่มี
+        draft ใหม่ ไม่ใช่แค่ตอน Tier D เท่านั้น)"""
+        inc1 = self._make_incentive(date_from=date(2026, 3, 1), date_to=date(2026, 3, 31))
+        inc2 = self._make_incentive(
+            driver_id=self.env['hr.employee'].create({'name': 'Second Driver'}).id,
+            date_from=date(2026, 3, 1), date_to=date(2026, 3, 31))
+        batch = inc1 + inc2
+        n_before = len(inc1.message_ids)
+        batch._notify_hr_new_drafts_batch(3, 2026)
+        self.assertGreater(len(inc1.message_ids), n_before)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # UC-12 — Verify Device (GET /vehicles/{id}/device) — fleet_vehicle_ext.py
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestUC12VerifyDevice(FleetTelematicsBase):
-    """ตรวจว่า action_verify_device() flag mismatch ถูกต้องในทุกกรณี:
-    ตรงกัน, ไม่ตรงกัน, Backend 404, และเชื่อมต่อ Backend ไม่ได้."""
 
     def _mock_resp(self, status_code=200, json_data=None):
         r = MagicMock()
@@ -852,12 +926,10 @@ class TestUC12VerifyDevice(FleetTelematicsBase):
 
 # ══════════════════════════════════════════════════════════════════════════════
 # UC-12 — Reconcile Devices (GET /config_device) — models/telematics_config.py
+#   เพิ่มใหม่ 2026-07-06
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestUC12ReconcileDevices(FleetTelematicsBase):
-    """ตรวจว่า action_reconcile_devices() เทียบ device ระหว่าง Odoo กับ
-    Backend ถูกต้อง — ครอบคลุมทั้งกรณีตรงกันหมด, vehicle_id ไม่ตรง, Odoo
-    มี device ที่ Backend ไม่รู้จัก, และ Backend มี device เกินมา."""
 
     def _get_config(self):
         return self.env['fleet.telematics.config'].search([], limit=1, order='id asc') \
@@ -870,12 +942,15 @@ class TestUC12ReconcileDevices(FleetTelematicsBase):
         return r
 
     def test_01_all_matching_zero_mismatch(self):
-        """เมื่อ device ที่ Backend มีตรงกับที่ Odoo ผูกไว้ทั้งหมด รถทดสอบ
-        ของเราเอง (self.v1) ต้องไม่ถูก flag เป็น mismatch — เช็คเฉพาะรถ
-        ทดสอบตัวนี้แทนการเช็ค total count ทั้งระบบ เพราะฐานข้อมูลอาจมีรถ
-        อื่นที่ผูก device ไว้ก่อนแล้วจากการทดสอบมือ ซึ่งจะถูกนับเป็น
-        mismatch ไปด้วยถ้า mock ให้ Backend มีแค่ device เดียว (พฤติกรรม
-        ถูกต้องของฟังก์ชัน ไม่ใช่บั๊ก)"""
+        # แก้ 2026-07-17: เดิมเช็ค device_mismatch_count == 0 ตรงๆ ซึ่งใช้ได้
+        # แค่ในฐานข้อมูลว่างเปล่าเท่านั้น — action_reconcile_devices()
+        # ตรวจสอบ "ทุกรถที่มี telematics_device_id" ในระบบทั้งหมดโดยออกแบบ
+        # ไว้แบบนั้นจริง (ถูกต้องแล้วสำหรับใช้งานจริง) แต่ถ้ารันบนฐานข้อมูล
+        # ที่มีรถจริงอยู่ก่อนแล้ว (เช่น KTC-001 ถึง KTC-010 จากการทดสอบมือ)
+        # การ mock ให้ Backend มีแค่ 1 device จะทำให้รถจริงที่เหลือถูกนับเป็น
+        # mismatch ไปด้วย (ไม่ใช่บั๊กของฟังก์ชัน แค่ test เดิมไม่ทนต่อข้อมูล
+        # ที่มีอยู่ก่อน) เปลี่ยนไปเช็คเฉพาะว่า "รถทดสอบของเราเอง (self.v1)
+        # ต้องไม่ถูก flag เป็น mismatch" แทนการเช็ค total count ทั้งระบบ
         config = self._get_config()
         with patch('requests.get', return_value=self._mock_resp(
                 [{'device_id': 'KTC-BASE-01', 'vehicle_id': self.v1.id}])):
@@ -932,19 +1007,18 @@ class TestUC12ReconcileDevices(FleetTelematicsBase):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UC-11 — Portal Self-service (Record Rules)
+# UC-11 — Portal Self-service: ตรวจ ir.rule ที่ควบคุมการเห็นข้อมูลของตัวเอง
+#   (Controller ใช้ sudo() + กรอง driver_id เอง — เทสนี้ยืนยันว่าชั้น ir.rule
+#    ที่เป็น defense-in-depth ยังทำงานถูกต้อง หากมีจุดเรียกอื่นที่ไม่ผ่าน sudo())
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestUC11PortalDataIsolation(FleetTelematicsBase):
-    """ตรวจว่า driver user เห็นเฉพาะข้อมูล (Incentive/Trip Log) ของตัวเอง
-    ผ่าน ir.rule — ยืนยันว่าชั้น defense-in-depth นี้ยังทำงานถูกต้อง แม้
-    Controller หลักจะใช้ sudo() + กรอง driver_id เองอยู่แล้วก็ตาม
-    (ป้องกันจุดเรียกอื่นที่อาจไม่ผ่าน sudo())."""
 
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
         Users = cls.env['res.users'].with_context(no_reset_password=True)
+        # แก้ 2026-07-16: groups_id → group_ids ใน Odoo 19 (ดู _users_groups_field)
         cls.driver_user = Users.create({
             'name': 'Driver User', 'login': 'driver_user_test',
             _users_groups_field(cls.env): [(6, 0, [cls.env.ref('fleet.fleet_group_user').id])],
@@ -984,12 +1058,12 @@ class TestUC11PortalDataIsolation(FleetTelematicsBase):
         self.assertNotIn(other_trip, visible)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Maintenance Triggers — 3 รูปแบบการแจ้งเตือนซ่อมบำรุง
+# UC-Maintenance — 3 Trigger การแจ้งเตือนซ่อมบำรุง (FDD §2.2)
+#   เพิ่มใหม่ 2026-07-12: พบว่า Trigger 2 (ชั่วโมงเดินเครื่อง) ขาดหายไปทั้งหมด
+#   ในโค้ดเดิม — ไม่เคยมี test คลุมส่วนนี้เลยมาก่อน
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestMaintenanceTriggers(FleetTelematicsBase):
-    """ตรวจ _update_odometer_and_check_maintenance() ทั้ง 3 trigger:
-    ระยะทางสะสม, ชั่วโมงเดินเครื่องสะสม, และช่วงเวลานับจาก service ล่าสุด."""
 
     def setUp(self):
         super().setUp()
@@ -1064,12 +1138,11 @@ class TestMaintenanceTriggers(FleetTelematicsBase):
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Event Logs — Lockdown 3 ชั้น + Zone-based Speed Limit (models/telematics_event.py)
+#   เพิ่มใหม่ 2026-07-12: โมเดลนี้ไม่เคยมี test เลยมาก่อน ทั้งที่เป็นจุดที่
+#   ทำ read-only lock 3 ชั้นและ zone speed limit ไว้ค่อนข้างซับซ้อน
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestEventLogsLockdown(FleetTelematicsBase):
-    """ตรวจว่า fleet.telematics.event ล็อกไม่ให้แก้ไข/ลบ/สร้างผ่าน UI ได้
-    (เขียนได้เฉพาะผ่าน context flag ของ sync อัตโนมัติ) และคำนวณ
-    zone-based speed limit ถูกต้อง."""
 
     def setUp(self):
         super().setUp()
@@ -1189,11 +1262,10 @@ class TestEventLogsLockdown(FleetTelematicsBase):
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Vehicle Trip History Wizard (models/telematics_vehicle_trip.py)
+#   เพิ่มใหม่ 2026-07-12: wizard นี้ไม่เคยมี test เลยมาก่อน
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestVehicleTripHistoryWizard(FleetTelematicsBase):
-    """ตรวจ validation ของ wizard ดึงประวัติทริปรายคัน (เลือกรถ/device
-    ก่อนเสมอ) และการ populate ข้อมูลรถลงฟอร์ม."""
 
     def test_01_fetch_without_vehicle_raises(self):
         wiz = self.env['fleet.telematics.vehicle.trip.history'].create({})
@@ -1235,11 +1307,11 @@ class TestVehicleTripHistoryWizard(FleetTelematicsBase):
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Vehicle Aggregated Stats — total_trips/total_distance_km/avg_driver_score
+#   เพิ่มใหม่ 2026-07-12: พบว่า field เหล่านี้บน fleet.vehicle ไม่เคยถูกอัปเดต
+#   จากที่ไหนเลย ทั้งที่มี field อยู่แล้ว (ค้างเป็น 0 ตลอดไป)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestVehicleAggregatedStats(FleetTelematicsBase):
-    """ตรวจว่า _update_odometer_and_check_maintenance() สะสมสถิติของรถ
-    (จำนวนทริป, ระยะทางรวม, คะแนนเฉลี่ยแบบ running average) ถูกต้อง."""
 
     def test_01_total_trips_increments_per_call(self):
         Log = self.env['fleet.telematics.log']
@@ -1280,13 +1352,11 @@ class TestVehicleAggregatedStats(FleetTelematicsBase):
         self.assertEqual(self.v1.avg_driver_score, 85.0)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Data Retention — ลบ Trip Log ที่เก่ากว่าเกณฑ์ที่ตั้งไว้ (default 3 ปี)
+# Data Retention (FDD §13) — เพิ่มใหม่ 2026-07-16
+#   ลบ Trip Log ที่เก่ากว่าเกณฑ์ที่ตั้งไว้ (default 3 ปี) ไม่แตะ Incentive
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestDataRetention(FleetTelematicsBase):
-    """ตรวจ _cron_purge_old_trips() — ลบเฉพาะ trip ที่เก่ากว่า retention
-    period, ไม่แตะ trip ที่ยังใหม่, cascade ลบ event ที่ผูกอยู่ด้วย, ไม่แตะ
-    incentive เลย, และปรับ retention period ได้ผ่าน config."""
 
     def setUp(self):
         super().setUp()
