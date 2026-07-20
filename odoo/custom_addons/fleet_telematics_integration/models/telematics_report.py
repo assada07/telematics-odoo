@@ -1,19 +1,21 @@
-# ==============================================================================
-# models/telematics_report.py  (ไฟล์ใหม่)
-#
-# UC-07/08 — เดิม Energy Report และ Driver Scorecard คำนวณ aggregate เอง
-# จาก trip log ทั้งหมดในฝั่ง Odoo ทำให้มีความเสี่ยงตัวเลขไม่ตรงกับ Backend
-#
-# ตามคำตอบยืนยันจาก Backend (2026-06-30): endpoint สำเร็จรูปต่อไปนี้
-# มีไว้ให้ Odoo ดึงไปแสดงตรงๆ ได้เลย ไม่ต้องคำนวณซ้ำ:
-#   - GET /api/v1/reports/fuel-efficiency
-#   - GET /api/v1/drivers/{id}/score
-#   - GET /api/v1/drivers/{id}/fuel-summary
-#
-# Implementation: Wizard (TransientModel) ที่กดปุ่มแล้วยิง GET ตรงๆ
-# แล้วแสดงผลลัพธ์ดิบในรูปตาราง/ข้อความที่อ่านง่าย — ไม่เก็บ state ถาวร
-# เพราะข้อมูลควรอ้างอิงจาก Backend สดทุกครั้งที่เปิดดู
-# ==============================================================================
+"""models/telematics_report.py
+
+Wizard (TransientModel) สำหรับดึงรายงานสำเร็จรูปจาก Backend API มาแสดงผล
+โดยตรง (UC-07/08) แทนที่จะคำนวณ aggregate เองจาก trip log ในฝั่ง Odoo ซึ่ง
+มีความเสี่ยงตัวเลขไม่ตรงกับ Backend
+
+Endpoint ที่เชื่อมในไฟล์นี้:
+  - GET /api/v1/reports/fuel-efficiency        — สรุปประสิทธิภาพน้ำมันทั้งฟลีท
+  - GET /api/v1/drivers/{id}/score             — คะแนนคนขับรายคน
+  - GET /api/v1/drivers/{id}/fuel-summary      — สรุปน้ำมันรายคน
+  - GET /api/v1/drivers/{id}/events            — ประวัติ harsh events รายคน
+  - GET /api/v1/reports/driver-score           — คะแนนรวมทุกคน
+  - GET /api/v1/reports/fleet-summary          — ภาพรวม fleet รายวัน
+  - GET /api/v1/reports/maintenance-forecast   — พยากรณ์ซ่อมบำรุง
+
+Wizard เหล่านี้ไม่เก็บ state ถาวร (ยิง GET ใหม่ทุกครั้งที่กดปุ่ม) เพราะ
+ข้อมูลรายงานควรอ้างอิงจาก Backend สดเสมอ ไม่ใช่ snapshot เก่า
+"""
 
 import json
 import logging
@@ -27,6 +29,8 @@ _logger = logging.getLogger(__name__)
 
 
 class TelematicsFuelEfficiencyReport(models.TransientModel):
+    """Wizard ดึงรายงานน้ำมัน/คะแนนคนขับ 3 endpoint แรก."""
+
     _name = 'fleet.telematics.fuel.report.wizard'
     _description = 'Fuel Efficiency Report (จาก Backend โดยตรง)'
 
@@ -34,6 +38,11 @@ class TelematicsFuelEfficiencyReport(models.TransientModel):
     result_html = fields.Html(string='ผลลัพธ์', readonly=True, sanitize=False)
 
     def _api(self):
+        """คืน (api_url, api_key) ของ Backend ที่ตั้งค่าไว้ปัจจุบัน.
+
+        Raises:
+            UserError: ถ้ายังไม่ได้ตั้งค่า API URL
+        """
         Config = self.env['fleet.telematics.config']
         api_url = Config.get_active_api_url()
         api_key = Config.get_active_api_key()
@@ -42,6 +51,7 @@ class TelematicsFuelEfficiencyReport(models.TransientModel):
         return api_url, api_key
 
     def action_fetch_fuel_efficiency(self):
+        """ดึงรายงานประสิทธิภาพน้ำมันทั้งฟลีทจาก Backend มาแสดงเป็นตาราง."""
         self.ensure_one()
         api_url, api_key = self._api()
         try:
@@ -66,6 +76,11 @@ class TelematicsFuelEfficiencyReport(models.TransientModel):
         }
 
     def action_fetch_driver_score(self):
+        """ดึงคะแนนของ driver_id ที่เลือกไว้จาก Backend มาแสดงเป็นตาราง.
+
+        Raises:
+            UserError: ถ้ายังไม่ได้เลือก driver
+        """
         self.ensure_one()
         if not self.driver_id:
             raise UserError('กรุณาเลือก Driver ก่อนดึง Driver Score')
@@ -93,6 +108,11 @@ class TelematicsFuelEfficiencyReport(models.TransientModel):
         }
 
     def action_fetch_fuel_summary(self):
+        """ดึงสรุปน้ำมันของ driver_id ที่เลือกไว้จาก Backend มาแสดงเป็นตาราง.
+
+        Raises:
+            UserError: ถ้ายังไม่ได้เลือก driver
+        """
         self.ensure_one()
         if not self.driver_id:
             raise UserError('กรุณาเลือก Driver ก่อนดึง Fuel Summary')
@@ -121,7 +141,16 @@ class TelematicsFuelEfficiencyReport(models.TransientModel):
 
     @staticmethod
     def _render_json_table(data, title):
-        """แปลง JSON response เป็นตาราง HTML อ่านง่าย (รองรับ dict/list ระดับเดียว)"""
+        """แปลง JSON response (dict/list ระดับเดียว) เป็นตาราง HTML อ่านง่าย.
+
+        Args:
+            data: ข้อมูลที่ได้จาก resp.json() — รองรับ dict, list, หรือ
+                ค่าเดี่ยว
+            title (str): หัวข้อที่แสดงเหนือตาราง
+
+        Returns:
+            str: HTML string พร้อมแสดงในฟิลด์ Html
+        """
         rows = ''
         if isinstance(data, dict):
             items = data.items()
@@ -143,16 +172,9 @@ class TelematicsFuelEfficiencyReport(models.TransientModel):
         )
 
 
-# ==============================================================================
-# เพิ่ม 4 API endpoints ที่ยังไม่เชื่อม (2026-07-02)
-# FDD §12.6 + API Spec:
-#   - GET /api/v1/drivers/{id}/events      — ประวัติ harsh events รายคน
-#   - GET /api/v1/reports/driver-score     — คะแนนรวมทุกคน
-#   - GET /api/v1/reports/fleet-summary    — ภาพรวม fleet รายวัน
-#   - GET /api/v1/reports/maintenance-forecast — พยากรณ์ซ่อมบำรุง
-# ==============================================================================
-
 class TelematicsBackendReports(models.TransientModel):
+    """Wizard ดึงรายงานสำเร็จรูปอีก 6 endpoint จาก Backend."""
+
     _name = 'fleet.telematics.backend.report'
     _description = 'Fleet Telematics Backend Reports (ดึงตรงจาก Backend)'
 
@@ -160,6 +182,11 @@ class TelematicsBackendReports(models.TransientModel):
     result_html  = fields.Html(string='ผลลัพธ์', readonly=True, sanitize=False)
 
     def _api(self):
+        """คืน (api_url, api_key) ของ Backend ที่ตั้งค่าไว้ปัจจุบัน.
+
+        Raises:
+            UserError: ถ้ายังไม่ได้ตั้งค่า API URL
+        """
         Config  = self.env['fleet.telematics.config']
         api_url = Config.get_active_api_url()
         api_key = Config.get_active_api_key()
@@ -167,8 +194,12 @@ class TelematicsBackendReports(models.TransientModel):
             raise UserError('กรุณาตั้งค่า API URL ของ Backend ใน Settings ก่อน')
         return api_url, api_key
 
-    # ── 1) GET /drivers/{id}/events ────────────────────────────────────────────
     def action_fetch_driver_events(self):
+        """ดึงประวัติ harsh events ของ driver ที่เลือก — GET /drivers/{id}/events.
+
+        Raises:
+            UserError: ถ้ายังไม่ได้เลือก driver
+        """
         self.ensure_one()
         if not self.driver_id:
             raise UserError('กรุณาเลือก Driver ก่อนดึงประวัติ Harsh Events')
@@ -187,8 +218,8 @@ class TelematicsBackendReports(models.TransientModel):
             resp.json(), f'Harsh Events — {self.driver_id.name}')
         return self._reopen()
 
-    # ── 2) GET /reports/driver-score (ทุกคน) ──────────────────────────────────
     def action_fetch_all_driver_scores(self):
+        """ดึงคะแนนคนขับรวมทุกคน — GET /reports/driver-score."""
         self.ensure_one()
         api_url, api_key = self._api()
         try:
@@ -205,8 +236,8 @@ class TelematicsBackendReports(models.TransientModel):
             resp.json(), 'Driver Score Report (ทุกคน)')
         return self._reopen()
 
-    # ── 3) GET /reports/fleet-summary ──────────────────────────────────────────
     def action_fetch_fleet_summary(self):
+        """ดึงภาพรวมฟลีทรายวัน — GET /reports/fleet-summary."""
         self.ensure_one()
         api_url, api_key = self._api()
         try:
@@ -223,8 +254,8 @@ class TelematicsBackendReports(models.TransientModel):
             resp.json(), 'Fleet Summary (ภาพรวม Fleet)')
         return self._reopen()
 
-    # ── 4) GET /reports/maintenance-forecast ───────────────────────────────────
     def action_fetch_maintenance_forecast(self):
+        """ดึงพยากรณ์ซ่อมบำรุง — GET /reports/maintenance-forecast."""
         self.ensure_one()
         api_url, api_key = self._api()
         try:
@@ -241,10 +272,15 @@ class TelematicsBackendReports(models.TransientModel):
             resp.json(), 'Maintenance Forecast (พยากรณ์ซ่อมบำรุง)')
         return self._reopen()
 
-    # ── 5) GET /drivers/{id}/score (รายคน) — แยกจาก /reports/driver-score ──────
     def action_fetch_driver_score_single(self):
-        """ดึงคะแนนของคนขับรายคน — GET /drivers/{id}/score
-        ตรงกับ Swagger: Get Driver Score (ต้องเลือก Driver)"""
+        """ดึงคะแนนคนขับรายคน — GET /drivers/{id}/score.
+
+        แยกจาก action_fetch_all_driver_scores ที่ดึงคะแนนรวมทุกคน
+        (ตรงกับ Swagger: "Get Driver Score" ที่ต้องระบุ driver)
+
+        Raises:
+            UserError: ถ้ายังไม่ได้เลือก driver
+        """
         self.ensure_one()
         if not self.driver_id:
             raise UserError('กรุณาเลือก Driver ก่อนดึง Driver Score รายคน')
@@ -263,8 +299,12 @@ class TelematicsBackendReports(models.TransientModel):
             resp.json(), f'Driver Score — {self.driver_id.name}')
         return self._reopen()
 
-    # ── 6) GET /drivers/{id}/fuel-summary ──────────────────────────────────────
     def action_fetch_fuel_summary(self):
+        """ดึงสรุปน้ำมันของ driver ที่เลือก — GET /drivers/{id}/fuel-summary.
+
+        Raises:
+            UserError: ถ้ายังไม่ได้เลือก driver
+        """
         self.ensure_one()
         if not self.driver_id:
             raise UserError('กรุณาเลือก Driver ก่อนดึง Fuel Summary')
@@ -283,8 +323,8 @@ class TelematicsBackendReports(models.TransientModel):
             resp.json(), f'Fuel Summary — {self.driver_id.name}')
         return self._reopen()
 
-    # ── 6) GET /reports/fuel-efficiency ────────────────────────────────────────
     def action_fetch_fuel_efficiency(self):
+        """ดึงประสิทธิภาพน้ำมันทั้งฟลีท — GET /reports/fuel-efficiency."""
         self.ensure_one()
         api_url, api_key = self._api()
         try:
@@ -301,8 +341,9 @@ class TelematicsBackendReports(models.TransientModel):
             resp.json(), 'Fuel Efficiency Report (ทั้งฟลีท)')
         return self._reopen()
 
-    # ── helper ──────────────────────────────────────────────────────────────────
     def _reopen(self):
+        """คืน action เปิดฟอร์ม wizard ตัวเดิมค้างไว้ (target=current) เพื่อ
+        ให้เห็นผลลัพธ์ที่เพิ่งเขียนลง result_html."""
         return {
             'type':      'ir.actions.act_window',
             'res_model': self._name,
@@ -313,6 +354,15 @@ class TelematicsBackendReports(models.TransientModel):
 
     @staticmethod
     def _render_table(data, title):
+        """แปลง JSON response (dict/list ระดับเดียว) เป็นตาราง HTML อ่านง่าย.
+
+        Args:
+            data: ข้อมูลที่ได้จาก resp.json()
+            title (str): หัวข้อที่แสดงเหนือตาราง
+
+        Returns:
+            str: HTML string พร้อมแสดงในฟิลด์ Html
+        """
         rows = ''
         if isinstance(data, dict):
             items = data.items()

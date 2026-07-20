@@ -1,17 +1,16 @@
-# ==============================================================================
-# controllers/main.py
-# ==============================================================================
-#
-# หมายเหตุ (แก้ไข 2026-06-30):
-# เดิมไฟล์นี้มี route POST /api/v1/vehicles ไว้รับ trip+event จาก Backend
-# แบบ webhook-push แต่ตรวจสอบกับ Swagger ของ Backend จริง (ยืนยัน 2 รอบ)
-# แล้วไม่มี endpoint ฝั่ง Backend ที่ยิง POST เข้ามาที่ Odoo เลย —
-# Backend ใช้สถาปัตยกรรมแบบ Cron ดึง (GET /trips/unsynced) เป็นทางการเท่านั้น
-# (ดู models/telematics_log.py: _cron_sync_trips)
-#
-# จึงตัดส่วน POST ออกทั้งหมด เหลือไว้แค่ GET /api/v1/vehicles สำหรับ
-# debug/เช็คสถานะรถจาก Odoo เท่านั้น เพื่อลดความเสี่ยงข้อมูล trip ซ้ำซ้อน
-# ==============================================================================
+"""controllers/main.py
+
+Web controller ฝั่ง Odoo สำหรับ Fleet Telematics ประกอบด้วย 4 route:
+  1. GET  /api/v1/devices              — health check ของฝั่ง Odoo เอง
+  2. GET  /fleet_telematics/live_proxy — SSE proxy ไปหา Backend สำหรับ Live Map
+  3. POST /fleet_telematics/vehicles_location — RPC ให้ OWL widget ดึงตำแหน่งรถ
+  4. GET  /api/v1/vehicles             — ให้ Backend ดึงรายชื่อรถจาก Odoo ไป debug/เช็คสถานะ
+
+หมายเหตุสถาปัตยกรรม: Backend ใช้รูปแบบ Cron ดึง (Odoo เป็นฝ่าย GET
+/trips/unsynced เข้าหา Backend เป็นระยะ — ดู models/telematics_log.py:
+_cron_sync_trips) ไม่มี endpoint ฝั่ง Backend ที่ยิง POST trip/event เข้ามา
+ที่ Odoo จึงไม่มี route รับ webhook-push ในไฟล์นี้
+"""
 
 import logging
 
@@ -24,7 +23,17 @@ _WEBHOOK_SECRET_PARAM = 'fleet_telematics.webhook_secret'
 
 
 def _verify_secret(req):
-    """ตรวจสอบ APIKEY header"""
+    """ตรวจสอบ APIKEY header ของ request ที่เข้ามา เทียบกับค่าที่ตั้งไว้.
+
+    ถ้ายังไม่ได้ตั้งค่า secret ไว้เลย (ค่าว่าง) จะถือว่าผ่านเสมอ — ใช้สำหรับ
+    ช่วง dev/testing ก่อนตั้งค่าจริง
+
+    Args:
+        req: Odoo http request object
+
+    Returns:
+        bool: True ถ้า APIKEY ตรงกัน (หรือยังไม่ได้ตั้งค่า secret ไว้เลย)
+    """
     ICP = request.env['ir.config_parameter'].sudo()
     expected = ICP.get_param(_WEBHOOK_SECRET_PARAM, '')
 
@@ -36,11 +45,8 @@ def _verify_secret(req):
 
 
 class TelematicsWebhookController(http.Controller):
+    """รวม route ทั้งหมดที่เกี่ยวกับการเชื่อมต่อ Backend และ Live Map."""
 
-    # ==========================================================================
-    # GET /api/v1/devices — health check ของฝั่ง Odoo เอง
-    # (คนละ endpoint กับ /config_device ของ Backend ที่ใช้ลงทะเบียน device)
-    # ==========================================================================
     @http.route(
         '/api/v1/devices',
         type='http',
@@ -49,28 +55,16 @@ class TelematicsWebhookController(http.Controller):
         csrf=False,
     )
     def health_check(self, **kwargs):
+        """คืนสถานะ 'ok' พร้อมชื่อ/เวอร์ชันโมดูล — ใช้เช็คว่า Odoo ยังทำงานอยู่.
 
+        คนละ endpoint กับ /config_device ของ Backend ที่ใช้ลงทะเบียน device
+        """
         return request.make_json_response({
             'status': 'ok',
             'service': 'fleet-telematics-odoo',
             'version': '19.0.1.0.0',
         })
 
-    # ==========================================================================
-    # GET /fleet_telematics/live_proxy  (UC-06 — SSE Real-time ตาม FDD spec)
-    #
-    # เปิด EventSource ไปที่ GET /api/v1/fleet/live ของ Backend
-    # แล้ว forward stream มาให้ browser ทุก 5 วินาที
-    #
-    # เหตุผลที่ต้องผ่าน proxy นี้:
-    #   1) native EventSource ของ browser ใส่ custom header (APIKEY) ไม่ได้
-    #   2) ไม่ต้องการ expose API Key ไว้ใน JS ฝั่ง client
-    #
-    # เพิ่ม: enrich vehicle_name และ driver_name จาก Odoo database
-    # เพราะ Backend SSE ส่งมาแค่ vehicle_id/device_id ไม่มีชื่อ
-    #
-    # อ้างอิง nginx config: docs/nginx_fleet_telematics_sse.conf
-    # ==========================================================================
     @http.route(
         '/fleet_telematics/live_proxy',
         type='http',
@@ -79,6 +73,21 @@ class TelematicsWebhookController(http.Controller):
         csrf=False,
     )
     def fleet_live_proxy(self, **kwargs):
+        """เปิด SSE stream ไปหา Backend แล้ว forward ต่อให้ browser (UC-06).
+
+        เหตุผลที่ต้องผ่าน proxy นี้แทนให้ browser ต่อ Backend ตรงๆ:
+          1) native EventSource ของ browser ใส่ custom header (APIKEY) ไม่ได้
+          2) ไม่ต้องการ expose API Key ไว้ใน JavaScript ฝั่ง client
+
+        นอกจากส่งต่อ stream แล้ว ยัง enrich ข้อมูลแต่ละ event ด้วย
+        vehicle_name/driver_name จาก Odoo database ก่อนส่งให้ browser
+        เพราะ Backend ส่งมาแค่ vehicle_id/device_id โดยไม่มีชื่อ
+
+        (อ้างอิง nginx config: docs/nginx_fleet_telematics_sse.conf)
+
+        Returns:
+            werkzeug Response: text/event-stream แบบ direct passthrough
+        """
         import json as _json
         from odoo.http import Response
 
@@ -92,9 +101,9 @@ class TelematicsWebhookController(http.Controller):
                 mimetype='text/event-stream',
             )
 
-        # lookup table: vehicle_id → {name, driver_name}
-        # ดึง ALL vehicles ไม่กรองแค่ที่มี device
-        # เพราะ SSE อาจส่ง vehicle_id ที่ยังไม่มี device ใน Odoo มาด้วย
+        # เตรียม lookup table: vehicle_id → {vehicle_name, driver_name}
+        # ดึงรถ "ทั้งหมด" ไม่กรองเฉพาะที่มี device เพราะ SSE จาก Backend
+        # อาจส่ง vehicle_id ที่ยังไม่มี device ผูกใน Odoo มาด้วยได้
         vehicles = request.env['fleet.vehicle'].sudo().search([])
         vehicle_info = {
             v.id: {
@@ -105,6 +114,8 @@ class TelematicsWebhookController(http.Controller):
         }
 
         def generate():
+            """generator ที่ยิง GET แบบ stream ไปหา Backend แล้ว yield
+            ทีละบรรทัด SSE กลับไปให้ browser พร้อม enrich ชื่อรถ/คนขับ."""
             import requests as _req
             try:
                 with _req.get(
@@ -121,7 +132,6 @@ class TelematicsWebhookController(http.Controller):
                             yield b'\n'
                             continue
 
-                        # เพิ่ม vehicle_name / driver_name ก่อนส่งต่อ browser
                         if line.startswith('data:'):
                             raw = line[5:].strip()
                             try:
@@ -134,7 +144,7 @@ class TelematicsWebhookController(http.Controller):
                                         item['driver_name']  = info.get('driver_name', '-')
                                     line = 'data: ' + _json.dumps(arr, ensure_ascii=False)
                             except Exception:
-                                pass  # ถ้า parse ไม่ได้ส่ง raw ไปเลย
+                                pass  # parse ไม่ได้ → ส่ง raw line ต่อไปเลย ไม่ให้ stream หยุด
 
                         yield (line + '\n').encode('utf-8')
 
@@ -154,27 +164,7 @@ class TelematicsWebhookController(http.Controller):
                 ('Connection', 'keep-alive'),
             ],
         )
-    # ==========================================================================
-    # POST /fleet_telematics/vehicles_location  (เพิ่มใหม่ 2026-07-01 — UC-06)
-    # OWL Widget เรียก RPC มาที่นี่ทุก 30 วินาที (Polling ตาม FDD §7.3)
-    #
-    # [แก้ไข 2026-07-06] FDD Table "Vehicles & Live" ระบุ endpoint
-    # GET /api/v1/vehicles ("ดึงรายการยานพาหนะทั้งหมด") ไว้เป็นทางการ แต่โค้ด
-    # เดิมไม่เคยเรียกเลย — วนยิง GET /vehicles/{id}/location ทีละคันแทน
-    # (ทำงานได้ แต่ยิง N ครั้งต่อรอบ polling แทนที่จะยิงครั้งเดียว)
-    #
-    # แก้ให้เรียก GET /api/v1/vehicles (bulk) เป็นตัวหลักตาม FDD ก่อน:
-    #   - ลองอ่านพิกัด/สถานะจากผลลัพธ์ bulk โดยรองรับหลายชื่อ key เท่าที่
-    #     เป็นไปได้ (lat/latitude, lon/longitude, ...) เพราะ Swagger ที่มี
-    #     ไม่ได้ระบุ schema ของ response แบบละเอียด (เห็นแค่ตัวอย่าง "string")
-    #   - ถ้า bulk call ล้มเหลว (network error / ไม่ใช่ 200 / parse ไม่ได้)
-    #     หรือได้ response แต่ไม่พบพิกัดของรถคันไหนเลยทั้งที่มีรถที่ต้องดึง
-    #     จะ fallback ไปใช้วิธีเดิม (วน GET /vehicles/{id}/location ทีละคัน)
-    #     เพื่อไม่ให้ Live Map พังถ้า schema จริงไม่ตรงกับที่สมมติไว้
-    #
-    # คืน array ของรถทุกคันที่มี Device + มีพิกัด GPS (รูปแบบผลลัพธ์เดิม
-    # ไม่เปลี่ยน — widget ฝั่ง frontend ไม่ต้องแก้)
-    # ==========================================================================
+
     @http.route(
         '/fleet_telematics/vehicles_location',
         type='json',
@@ -183,6 +173,23 @@ class TelematicsWebhookController(http.Controller):
         csrf=False,
     )
     def vehicles_location(self, **kwargs):
+        """คืนตำแหน่ง GPS ล่าสุดของรถทุกคันที่มี Device — เรียกจาก OWL widget
+        ทุก 30 วินาที (polling ตาม FDD §7.3) แทนการต่อ SSE โดยตรง
+
+        กลยุทธ์การดึงข้อมูล 2 ชั้น:
+          1. ลองทางหลักก่อน: GET /api/v1/vehicles (bulk endpoint ตาม FDD)
+             ยิงครั้งเดียวได้ข้อมูลรถทุกคัน แทนที่จะวนยิงทีละคัน
+             รองรับหลายชื่อ key ที่เป็นไปได้ (lat/latitude, lon/longitude
+             ฯลฯ) เพราะ Swagger ไม่ได้ระบุ schema ของ response แบบละเอียด
+          2. ถ้าทางหลักล้มเหลว หรือเรียกสำเร็จแต่ parse พิกัดไม่ได้เลยทั้งที่
+             มีรถต้องดึง → fallback ไปวน GET /vehicles/{id}/location ทีละ
+             คันแทน เพื่อไม่ให้ Live Map พังถ้า schema จริงไม่ตรงกับที่คาด
+
+        Returns:
+            list[dict]: รายการรถที่มี Device และมีพิกัด GPS แต่ละรายการมี
+            vehicle_id, vehicle_name, device_id, driver_name, lat, lon,
+            speed, ignition, ts
+        """
         import requests as _requests
 
         Config  = request.env['fleet.telematics.config'].sudo()
@@ -192,13 +199,15 @@ class TelematicsWebhookController(http.Controller):
         if not api_url:
             return []
 
-        # ดึงเฉพาะรถที่มี Device ผูกอยู่แล้ว (Register Device แล้ว)
+        # ดึงเฉพาะรถที่ลงทะเบียน Device ไว้แล้ว
         vehicles = request.env['fleet.vehicle'].sudo().search([
             ('telematics_device_id', '!=', False),
         ])
         vehicles_by_id = {v.id: v for v in vehicles}
 
         def _build_entry(v, lat, lon, speed, ignition, ts):
+            """ประกอบ dict ผลลัพธ์ 1 รายการให้อยู่ในรูปแบบเดียวกันเสมอ
+            ไม่ว่าจะมาจากทาง bulk หรือ fallback."""
             return {
                 'vehicle_id':   v.id,
                 'vehicle_name': v.display_name or v.name,
@@ -211,7 +220,7 @@ class TelematicsWebhookController(http.Controller):
                 'ts':           ts or '',
             }
 
-        # ── 1) ลองทางหลักตาม FDD: GET /api/v1/vehicles (bulk, ครั้งเดียว) ──
+        # ── ทางหลัก: GET /api/v1/vehicles (bulk, ยิงครั้งเดียว) ──────────
         try:
             resp = _requests.get(
                 f'{api_url}/api/v1/vehicles',
@@ -247,9 +256,9 @@ class TelematicsWebhookController(http.Controller):
                         continue
                     v = vehicles_by_id.get(vid)
                     if not v:
-                        continue  # รถคันนี้ไม่มี device ผูกใน Odoo (หรือไม่รู้จัก) ข้าม
+                        continue  # รถคันนี้ไม่มี device ผูกใน Odoo ข้าม
 
-                    # telemetry อาจซ้อนอยู่ใต้ key เช่น 'location' / 'telemetry'
+                    # telemetry อาจซ้อนอยู่ใต้ key ชื่ออื่น เช่น 'location'/'telemetry'
                     tel = (
                         item.get('location')
                         or item.get('telemetry')
@@ -259,7 +268,7 @@ class TelematicsWebhookController(http.Controller):
                     lat = tel.get('lat') or tel.get('latitude')
                     lon = tel.get('lon') or tel.get('longitude')
                     if not lat or not lon:
-                        continue  # ยังไม่มีพิกัด ข้าม (เหมือนพฤติกรรมเดิม)
+                        continue  # ยังไม่มีพิกัด ข้าม
 
                     bulk_result.append(_build_entry(
                         v, lat, lon,
@@ -269,10 +278,10 @@ class TelematicsWebhookController(http.Controller):
                     ))
 
                 if bulk_result or not vehicles:
-                    # ได้ผลลัพธ์ใช้ได้จริง (หรือไม่มีรถให้ดึงตั้งแต่แรก) ใช้ทางนี้เลย
+                    # ได้ผลลัพธ์ใช้ได้จริง (หรือไม่มีรถให้ดึงตั้งแต่แรก) จบที่นี่
                     return bulk_result
-                # bulk เรียกสำเร็จแต่ parse ไม่ได้พิกัดของรถคันไหนเลย ทั้งที่มีรถ
-                # ต้องดึง → เดา schema ผิด, ตกไป fallback ด้านล่าง
+                # bulk เรียกสำเร็จแต่ parse พิกัดไม่ได้เลยทั้งที่มีรถต้องดึง
+                # → schema อาจไม่ตรงตามที่คาด ตกไป fallback ด้านล่าง
                 _logger.warning(
                     'vehicles_location: GET /api/v1/vehicles คืน 200 แต่ไม่พบพิกัด '
                     'ที่ parse ได้เลย (schema อาจไม่ตรงตามที่คาด) → fallback เป็น per-vehicle'
@@ -286,7 +295,7 @@ class TelematicsWebhookController(http.Controller):
             _logger.warning(
                 'vehicles_location: GET /api/v1/vehicles ล้มเหลว (%s) → fallback เป็น per-vehicle', e)
 
-        # ── 2) Fallback: วิธีเดิม — วน GET /vehicles/{id}/location ทีละคัน ──
+        # ── Fallback: วน GET /vehicles/{id}/location ทีละคัน ────────────
         result = []
         for v in vehicles:
             try:
@@ -296,14 +305,14 @@ class TelematicsWebhookController(http.Controller):
                     timeout=5,
                 )
                 if resp.status_code != 200:
-                    continue  # Backend ไม่รู้จักรถคันนี้ยัง ข้ามไป
+                    continue  # Backend ไม่รู้จักรถคันนี้ยัง ข้าม
 
                 data = resp.json()
                 lat  = data.get('lat') or data.get('latitude')
                 lon  = data.get('lon') or data.get('longitude')
 
                 if not lat or not lon:
-                    continue  # ยังไม่มีพิกัด ข้ามไป
+                    continue  # ยังไม่มีพิกัด ข้าม
 
                 result.append(_build_entry(
                     v, lat, lon,
@@ -326,7 +335,14 @@ class TelematicsWebhookController(http.Controller):
         csrf=False,
     )
     def vehicles(self, **kwargs):
+        """คืนรายชื่อรถทั้งหมดในระบบให้ Backend ดึงไปใช้ debug/เช็คสถานะ.
 
+        ต้องแนบ APIKEY header ที่ตรงกับค่าที่ตั้งไว้ (ดู _verify_secret)
+        ไม่เช่นนั้นจะได้ status='error' กลับไป
+
+        Returns:
+            dict: {'status', 'count', 'vehicles': [...]}
+        """
         if not _verify_secret(request):
             return {'status': 'error', 'message': 'Unauthorized - invalid APIKEY'}
 

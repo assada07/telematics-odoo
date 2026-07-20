@@ -83,7 +83,7 @@ jobs:
       # ติดตั้ง/อัปเดต custom module ทั้งหมดอัตโนมัติ (ดึงชื่อจากโฟลเดอร์ custom_addons)
       - name: Install & Upgrade Odoo modules
         run: |
-          MODULES=$(find odoo/custom_addons -maxdepth 1 -mindepth 1 -type d -exec basename {} \; | paste -sd, -)
+          MODULES=$(find ***/custom_addons -maxdepth 1 -mindepth 1 -type d ! -name fleet_telematics -exec basename {} \; | paste -sd, -)
           echo "Modules found: $MODULES"
 
           if [ -z "$MODULES" ]; then

@@ -1,43 +1,40 @@
-# ==============================================================================
-# models/telematics_event.py
-# โมเดลเก็บเหตุการณ์เสี่ยง (Event Logs) — พฤติกรรมอันตรายของคนขับ
-#
-# แก้ 2026-07-08 (ตามข้อสั่งจากผู้ตรวจงาน):
-#   1) ล็อกข้อมูลทั้งหมดให้แก้ไข/ลบ/สร้างผ่าน UI ไม่ได้เด็ดขาด — เขียนได้
-#      เฉพาะ path อัตโนมัติจาก Backend sync เท่านั้น (ผ่าน context flag พิเศษ
-#      ที่ผู้ใช้ปกติไม่มีทางส่งมาได้จากหน้าจอ) เพื่อความโปร่งใส ป้องกันการ
-#      แก้ไขข้อมูลหรือโกงคะแนนพนักงาน
-#   2) เพิ่มการคำนวณ speed limit ตามโซนพื้นที่ (กรุงเทพฯ 80 กม./ชม.,
-#      นอกเมือง 90 กม./ชม.) จากพิกัด lat/lon ของ event เพื่อใช้เป็นข้อมูล
-#      ตั้งต้นให้ระบบคะแนน/โบนัสนำไปประมวลผลต่อ
-#   3) เพิ่ม vehicle_id / driver_id (related + store) เพื่อให้ Group By ได้
-#      ตรงบนโมเดลนี้เลยโดยไม่ต้องผ่าน trip_id
-# ==============================================================================
+"""models/telematics_event.py
+
+โมเดลเก็บเหตุการณ์เสี่ยง (Harsh Event) — พฤติกรรมอันตรายของคนขับที่ตรวจจับ
+ได้จากบอร์ด GPS/IMU เช่น เบรกกะทันหัน เร่งกะทันหัน เข้าโค้งแรง ขับเร็วเกิน
+กำหนด จอดเดินเบานาน หรือกระแทก
+
+จุดสำคัญของโมเดลนี้:
+  - ข้อมูลทั้งหมดต้องมาจาก Backend sync เท่านั้น ห้ามแก้ไข/ลบ/สร้างผ่าน UI
+    เพื่อความโปร่งใสของคะแนน/โบนัส (ดู _check_sync_context)
+  - คำนวณ speed limit ตามโซนพื้นที่ (กรุงเทพฯ/นอกเมือง) จากพิกัดของ event
+    เพื่อใช้เป็นข้อมูลตั้งต้นให้ระบบคะแนนนำไปประมวลผลต่อ
+  - มี vehicle_id/driver_id related field สำหรับ Group By ได้ตรงบนหน้า
+    Event Logs โดยไม่ต้องผ่าน trip_id
+"""
 from odoo import models, fields, api
 from odoo.exceptions import UserError
 
-# ── ข้อ 2: Geofence โซนกรุงเทพฯ (ประมาณการแบบ bounding box) ──────────────────
-# ⚠️ นี่คือกรอบพิกัดสี่เหลี่ยมคร่าวๆ ครอบคลุมพื้นที่กรุงเทพฯ+ปริมณฑลชั้นใน
-#    ไม่ใช่ขอบเขตการปกครองจริงตาม shapefile — ความแม่นยำระดับ "ในเมือง/
-#    นอกเมือง" เท่านั้น ถ้าต้องการความแม่นยำระดับเขต/อำเภอ ต้องเปลี่ยนไปใช้
-#    GeoJSON polygon จริงของกรมการปกครองแทน bounding box นี้
+# กรอบพิกัดสี่เหลี่ยม (bounding box) ครอบคลุมพื้นที่กรุงเทพฯ+ปริมณฑลชั้นใน
+# แบบประมาณการ ไม่ใช่ขอบเขตการปกครองจริงตาม shapefile — ให้ความแม่นยำระดับ
+# "ในเมือง/นอกเมือง" เท่านั้น
 BANGKOK_BBOX = {
     'lat_min': 13.49, 'lat_max': 13.96,
     'lon_min': 100.32, 'lon_max': 100.93,
 }
-SPEED_LIMIT_BANGKOK_KMH   = 80.0
-SPEED_LIMIT_OUTSIDE_KMH   = 90.0
+SPEED_LIMIT_BANGKOK_KMH = 80.0
+SPEED_LIMIT_OUTSIDE_KMH = 90.0
 
 
 class TelematicsEvent(models.Model):
+    """เหตุการณ์เสี่ยง 1 record ต่อ 1 เหตุการณ์ ผูกกับ trip ที่เกิดเหตุการณ์นั้น."""
+
     _name        = 'fleet.telematics.event'
     _description = 'Fleet Telematics Harsh Event'
     _order       = 'occurred_at desc'
 
-    # ============================================================
-    # [A] ผูก Event กับ Trip
-    # ถ้าลบ trip → events ถูกลบทั้งหมดอัตโนมัติ (ondelete cascade)
-    # ============================================================
+    # ── ความสัมพันธ์กับ Trip ─────────────────────────────────────
+    # ลบ trip แล้ว event ที่ผูกอยู่จะถูกลบตามไปด้วยอัตโนมัติ (cascade)
     trip_id = fields.Many2one(
         'fleet.telematics.log',
         string='Trip Log',
@@ -46,7 +43,8 @@ class TelematicsEvent(models.Model):
         readonly=True,
     )
 
-    # ── ข้อ 3: related fields สำหรับ Group By โดยตรงบนหน้า Event Logs ──────────
+    # related field เพื่อให้ Group By vehicle/driver ได้ตรงบนหน้า Event Logs
+    # โดยไม่ต้องผ่าน trip_id
     vehicle_id = fields.Many2one(
         'fleet.vehicle', string='Vehicle',
         related='trip_id.vehicle_id', store=True, readonly=True, index=True)
@@ -54,10 +52,7 @@ class TelematicsEvent(models.Model):
         'hr.employee', string='Driver',
         related='trip_id.driver_id', store=True, readonly=True, index=True)
 
-    # ============================================================
-    # [B] ประเภทและรายละเอียดของเหตุการณ์
-    # จำแนกชนิดพฤติกรรมอันตราย พร้อมเวลา พิกัด ความเร็ว และความรุนแรง
-    # ============================================================
+    # ── รายละเอียดเหตุการณ์ ──────────────────────────────────────
     event_type = fields.Selection([
         ('harsh_brake',  'Harsh Brake'),
         ('harsh_accel',  'Harsh Acceleration'),
@@ -74,11 +69,7 @@ class TelematicsEvent(models.Model):
     speed_at_event = fields.Float(string='Speed (km/h)',      digits=(10, 2), readonly=True)
     description    = fields.Char(string='Description', readonly=True)
 
-    # ============================================================
-    # [C] ข้อ 2 — Zone-based Speed Limit
-    # ใช้พิกัด lat/lon ของ event เช็คว่าอยู่ในกรอบกรุงเทพฯ หรือไม่ แล้วคืน
-    # speed limit ตามโซน + flag ว่าเกินหรือไม่ (เทียบกับ speed_at_event)
-    # ============================================================
+    # ── Speed Limit ตามโซนพื้นที่ ────────────────────────────────
     speed_limit_kmh = fields.Float(
         string='Speed Limit ตามโซน (km/h)',
         compute='_compute_speed_zone', store=True, digits=(10, 1),
@@ -97,6 +88,12 @@ class TelematicsEvent(models.Model):
 
     @api.depends('lat', 'lon', 'speed_at_event')
     def _compute_speed_zone(self):
+        """คำนวณโซนพื้นที่และ speed limit ที่เกี่ยวข้องจากพิกัดของ event.
+
+        ตรวจว่าพิกัด (lat, lon) อยู่ในกรอบ BANGKOK_BBOX หรือไม่ แล้วกำหนด
+        zone_label / speed_limit_kmh ตามนั้น จากนั้นเทียบ speed_at_event
+        กับ speed_limit_kmh เพื่อตั้งค่า is_over_speed_limit
+        """
         for rec in self:
             in_bkk = (
                 BANGKOK_BBOX['lat_min'] <= rec.lat <= BANGKOK_BBOX['lat_max']
@@ -109,18 +106,23 @@ class TelematicsEvent(models.Model):
             )
             rec.is_over_speed_limit = rec.speed_at_event > rec.speed_limit_kmh
 
-    # ============================================================
-    # [D] ข้อ 1 — ล็อกให้แก้ไข/ลบ/สร้างผ่านหน้าจอไม่ได้เด็ดขาด
-    #
-    # ACL (security/ir.model.access.csv) ตัด perm_write/create/unlink ออก
-    # ให้ทุกกลุ่มผู้ใช้แล้วเป็นชั้นแรก แต่ ACL ป้องกันไม่ได้ถ้ามีคน sudo()
-    # เขียนตรงๆ จากที่อื่นในโค้ด — เพิ่มชั้นที่สองนี้กันไว้อีกชั้น: create/
-    # write/unlink จะสำเร็จ "เฉพาะ" ตอนมี context flag
-    # 'fleet_telematics_allow_sync' เท่านั้น ซึ่งมีแค่โค้ด sync อัตโนมัติของ
-    # โมดูลนี้เอง (models/telematics_log.py) ที่ตั้ง flag นี้ได้ — ผู้ใช้
-    # ทั่วไปหรือแม้แต่ Admin ผ่านหน้าจอปกติจะไม่มีทางส่ง context นี้มาได้
-    # ============================================================
+    # ── ล็อกไม่ให้แก้ไข/ลบ/สร้างผ่านหน้าจอปกติ ───────────────────
+    # ACL (security/ir.model.access.csv) ตัดสิทธิ์ write/create/unlink ของ
+    # ทุกกลุ่มไว้เป็นชั้นแรกอยู่แล้ว แต่ ACL ป้องกันโค้ดที่ sudo() เขียนตรงๆ
+    # จากที่อื่นไม่ได้ — เมธอดด้านล่างเป็นชั้นป้องกันที่สอง: อนุญาตให้เขียน
+    # ได้เฉพาะตอนมี context flag 'fleet_telematics_allow_sync' เท่านั้น ซึ่ง
+    # มีแค่ path sync อัตโนมัติของโมดูลนี้เอง (models/telematics_log.py) ที่
+    # ตั้ง flag นี้ได้ ผู้ใช้ทั่วไปหรือ Admin ผ่านหน้าจอปกติทำไม่ได้
     def _check_sync_context(self, action):
+        """ตรวจว่ามี context flag ที่อนุญาตให้ sync เขียนข้อมูลได้หรือไม่.
+
+        Args:
+            action (str): คำอธิบายการกระทำ (สร้าง/แก้ไข/ลบ) ใช้แสดงใน
+                ข้อความ error เท่านั้น
+
+        Raises:
+            UserError: ถ้าไม่มี context flag 'fleet_telematics_allow_sync'
+        """
         if not self.env.context.get('fleet_telematics_allow_sync'):
             raise UserError(
                 'Event Logs เป็นข้อมูลที่ดึงจากบอร์ด GPS อัตโนมัติเท่านั้น — '
@@ -129,13 +131,16 @@ class TelematicsEvent(models.Model):
 
     @api.model_create_multi
     def create(self, vals_list):
+        """สร้าง record ได้เฉพาะตอน sync อัตโนมัติเท่านั้น (ดู _check_sync_context)."""
         self._check_sync_context('สร้าง')
         return super().create(vals_list)
 
     def write(self, vals):
+        """แก้ไข record ได้เฉพาะตอน sync อัตโนมัติเท่านั้น (ดู _check_sync_context)."""
         self._check_sync_context('แก้ไข')
         return super().write(vals)
 
     def unlink(self):
+        """ลบ record ได้เฉพาะตอน sync อัตโนมัติเท่านั้น (ดู _check_sync_context)."""
         self._check_sync_context('ลบ')
         return super().unlink()

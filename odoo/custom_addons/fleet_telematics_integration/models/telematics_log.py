@@ -1,27 +1,30 @@
-# ==============================================================================
-# models/telematics_log.py
-# โมเดลเก็บประวัติเที่ยววิ่ง (Trip Logs)
-#
-# UC-05 Sync Trip Log — ตาม FDD §11.3 / §12.5 (อัปเดต 2026-07-01)
-#
-# endpoint ที่ใช้จริง (ยืนยันจาก Backend API doc ล่าสุด):
-#   1) POST /api/v1/webhook/odoo-sync   → ส่ง last_sync_timestamp รับ trips[]
-#   2) PATCH /api/v1/trips/batch/mark-synced → mark สำเร็จทั้งชุด
-#   3) PATCH /api/v1/trips/{id}/mark-synced  → mark รายตัว (retry เดี่ยว)
-#
-# เปลี่ยนจาก GET /trips/unsynced (cursor last_id) เป็น POST /webhook/odoo-sync
-# (timestamp-based) ตาม FDD §11.3 — ห้ามคำนวณ timestamp เอง ต้องใช้ค่า
-# last_sync_timestamp ที่ Backend ส่งกลับมาเท่านั้น (ป้องกัน clock drift)
-#   [I]  _cron_sync_trips()    — Cron Entry Point (ทุก 5 นาที)
-#   [J]  _fetch_trips_batch()  — POST /webhook/odoo-sync
-#   [K]  _mark_trips_synced()  — PATCH /trips/batch/mark-synced
-#   [L]  _retry_single_trip()  — PATCH /trips/{id}/mark-synced
-#   [M]  _parse_trip_dt()      — แปลง ISO datetime → UTC
-#   [N]  _build_trip_vals()    — แปลง dict → vals
-# ==============================================================================
+"""models/telematics_log.py
+
+โมเดลเก็บประวัติเที่ยววิ่ง (Trip Log) — หัวใจของ UC-04/05: sync ข้อมูลทริป
+จาก Backend เข้า Odoo อัตโนมัติทุก 5 นาทีผ่าน Cron
+
+Flow การ sync (ดู _cron_sync_trips สำหรับรายละเอียดเต็ม):
+  1. POST /webhook/odoo-sync         — ดึง trip ใหม่ตั้งแต่ last_sync_timestamp
+  2. บันทึกแต่ละ trip ลง Odoo (idempotent write/create)
+  3. PATCH /trips/batch/mark-synced  — แจ้ง Backend ว่า sync สำเร็จทั้งชุด
+  4. เก็บ last_sync_timestamp ใหม่จาก Backend (ห้ามคำนวณเอง ป้องกัน clock drift)
+  5. ถ้า batch เต็ม (200 รายการ) วน loop ต่อทันที เผื่อมี trip เหลืออีก
+
+เมธอดหลักในไฟล์นี้:
+  _cron_sync_trips()      — Cron entry point
+  _fetch_trips_batch()    — POST /webhook/odoo-sync
+  _mark_trips_synced()    — PATCH /trips/batch/mark-synced
+  _retry_single_trip()    — PATCH /trips/{id}/mark-synced (manual tool)
+  _parse_trip_dt()        — แปลง ISO datetime (มี timezone) → UTC naive
+  _build_trip_vals()      — แปลง dict จาก Backend → vals dict ของ Odoo
+  _sync_trip_events()     — ดึง harsh events ของแต่ละ trip มาเก็บ
+  _update_odometer_and_check_maintenance() — อัปเดตสถิติรถ + trigger ซ่อมบำรุง
+  _cron_purge_old_trips() — ลบทริปเก่าตาม data retention policy
+"""
 import logging
 import requests
 from datetime import datetime, timezone
+from markupsafe import Markup
 
 from odoo import models, fields, api
 from odoo.exceptions import UserError
@@ -33,36 +36,33 @@ _BATCH_FULL    = 200
 
 
 class TelematicsLog(models.Model):
+    """Trip 1 เที่ยววิ่ง ต่อ 1 record — sync มาจาก Backend เท่านั้น."""
+
     _name        = 'fleet.telematics.log'
     _description = 'Fleet Telematics Trip Log'
     _order       = 'trip_start desc'
     _rec_name    = 'display_name'
 
-    _sql_constraints = [
-        ('external_trip_id_unique',
-         'UNIQUE(external_trip_id)',
-         'external_trip_id ต้องไม่ซ้ำกัน — ห้ามบันทึก Trip ซ้ำจาก Backend'),
-    ]
-    # ============================================================
-    # [A] ข้อมูลหลักของ Trip — รถ คนขับ และอุปกรณ์ GPS
-    # ============================================================
+    _external_trip_id_unique = models.Constraint(
+        'UNIQUE(external_trip_id)',
+        'external_trip_id ต้องไม่ซ้ำกัน — ห้ามบันทึก Trip ซ้ำจาก Backend',
+    )
+
+    # ── ข้อมูลหลักของ Trip: รถ คนขับ และอุปกรณ์ GPS ──────────────
     vehicle_id = fields.Many2one(
         'fleet.vehicle', string='Vehicle',
         required=True, ondelete='restrict')
+    # optional เพราะ Backend อาจส่ง driver_id=null/0 มาสำหรับ trip ที่ยัง
+    # ไม่ได้ assign คนขับ — ต้องบันทึกได้ก่อน แล้วไปผูกคนขับทีหลังใน Odoo ได้
     driver_id = fields.Many2one(
         'hr.employee', string='Driver',
-        required=False,  # แก้ 2026-07-01: เดิม required=True ทำให้ cron crash
-                         # ทันทีถ้า Backend ส่ง driver_id=null/0 มา (trip ที่ยัง
-                         # ไม่ได้ assign คนขับ) — เปลี่ยนเป็น optional เพื่อให้
-                         # บันทึกได้ก่อน แล้วไปผูกคนขับทีหลังใน Odoo ได้
+        required=False,
         ondelete='set null')
     telematics_device_id = fields.Char(
         string='Device ID',
         help='รหัสกล่องพ่วง GPS เช่น KTC-001')
 
-    # ============================================================
-    # [B] ช่วงเวลาของ Trip
-    # ============================================================
+    # ── ช่วงเวลาของ Trip ─────────────────────────────────────────
     trip_start   = fields.Datetime(string='Trip Start', required=True)
     trip_end     = fields.Datetime(string='Trip End')
     duration_min = fields.Float(
@@ -70,27 +70,21 @@ class TelematicsLog(models.Model):
         compute='_compute_duration', store=True,
         digits=(10, 2))
 
-    # ============================================================
-    # [C] สถิติการเดินทาง
-    # ============================================================
+    # ── สถิติการเดินทาง ──────────────────────────────────────────
     distance_km   = fields.Float(string='Distance (km)',    digits=(10, 2))
     max_speed     = fields.Float(string='Max Speed (km/h)', digits=(10, 2))
     avg_speed     = fields.Float(string='Avg Speed (km/h)', digits=(10, 2))
     idle_min      = fields.Float(string='Idle Time (min)',  digits=(10, 2))
     fuel_used_est = fields.Float(string='Fuel Est. (L)',    digits=(10, 3))
 
-    # ============================================================
-    # [D] คะแนนและสถิติเหตุการณ์อันตราย
-    # ============================================================
+    # ── คะแนนและสถิติเหตุการณ์อันตราย ────────────────────────────
     driver_score       = fields.Float(string='Driver Score',        digits=(5, 2))
     harsh_brake_count  = fields.Integer(string='Harsh Brakes')
     harsh_accel_count  = fields.Integer(string='Harsh Accelerations')
     harsh_corner_count = fields.Integer(string='Harsh Cornering')
     speeding_count     = fields.Integer(string='Speeding Events')
 
-    # ============================================================
-    # [E] ข้อมูลเส้นทาง GPS และการอ้างอิงกับระบบภายนอก
-    # ============================================================
+    # ── ข้อมูลเส้นทาง GPS และการอ้างอิงกับระบบภายนอก ──────────────
     gps_track_json   = fields.Text(string='GPS Track (JSON)',
         help='เก็บ GPS track ทั้งสาย เช่น [{"lat": 18.7883, "lon": 98.9853, "ts": "..."}]')
     external_trip_id = fields.Char(
@@ -98,9 +92,7 @@ class TelematicsLog(models.Model):
         index=True,
         help='Trip ID จาก MTD Backend สำหรับ sync และ dedup')
 
-    # ============================================================
-    # [F] สถานะและความสัมพันธ์กับ Events
-    # ============================================================
+    # ── สถานะและความสัมพันธ์กับ Events ───────────────────────────
     state = fields.Selection([
         ('draft',     'Draft'),
         ('confirmed', 'Confirmed'),
@@ -108,8 +100,8 @@ class TelematicsLog(models.Model):
         ('failed',    'Failed'),
     ], string='Sync Status', default='draft')
 
-    # เพิ่ม 2026-07-08: กัน trip เดิมถูกยิง GET /trips/{id} ซ้ำทุกรอบ cron
-    # เพื่อดึง harsh events — ดึงครั้งเดียวตอนสร้าง trip ใหม่ก็พอ
+    # กัน trip เดิมถูกยิง GET /trips/{id} ซ้ำทุกรอบ cron เพื่อดึง harsh
+    # events — ดึงครั้งเดียวตอนสร้าง trip ใหม่ก็พอ
     events_synced = fields.Boolean(
         string='Events Synced', default=False, readonly=True,
         help='True แล้วเมื่อดึง Harsh Events ของ trip นี้จาก Backend มาเก็บครบแล้ว')
@@ -120,11 +112,9 @@ class TelematicsLog(models.Model):
     display_name = fields.Char(
         compute='_compute_display_name', store=True)
 
-    # ============================================================
-    # [G] Computed Fields — ชื่อแสดงผลและระยะเวลา
-    # ============================================================
     @api.depends('vehicle_id', 'trip_start')
     def _compute_display_name(self):
+        """ชื่อแสดงผล เช่น 'BASE-001 — 15/06/26 08:00'."""
         for rec in self:
             v = rec.vehicle_id.name or '?'
             t = rec.trip_start.strftime('%d/%m/%y %H:%M') if rec.trip_start else '-'
@@ -132,36 +122,41 @@ class TelematicsLog(models.Model):
 
     @api.depends('trip_start', 'trip_end')
     def _compute_duration(self):
+        """คำนวณระยะเวลาทริปเป็นนาที จาก trip_end - trip_start."""
         for rec in self:
             if rec.trip_start and rec.trip_end:
                 rec.duration_min = (rec.trip_end - rec.trip_start).total_seconds() / 60
             else:
                 rec.duration_min = 0.0
 
-    # ============================================================
-    # [H] Action เปลี่ยนสถานะ Trip
-    # ============================================================
     def action_confirm(self):
+        """Draft → Confirmed (ยืนยันข้อมูลทริปด้วยมือ กรณีจำเป็น)."""
         for rec in self:
             if rec.state == 'draft':
                 rec.state = 'confirmed'
 
-    # ============================================================
-    # [I] _cron_sync_trips — Cron Entry (ทุก 5 นาที, §12.5)
-    #
-    # Flow ตาม FDD §11.3:
-    #   1. POST /webhook/odoo-sync ส่ง last_sync_timestamp เดิม
-    #      (รอบแรก: ไม่ส่ง field นี้ → Backend ส่ง trip ที่ยังไม่ sync ทั้งหมด)
-    #   2. บันทึกแต่ละ trip ลง Odoo (idempotent write/create)
-    #   3. PATCH /trips/batch/mark-synced สำหรับที่สำเร็จทั้งชุด
-    #   4. PATCH /trips/{id}/mark-synced รายตัวสำหรับที่ fail (retry เดี่ยว)
-    #   5. เก็บ last_sync_timestamp ใหม่จาก Backend
-    #      ⚠️ ห้ามใช้ datetime.now() ของ Odoo เอง — ต้องใช้ค่าจาก Backend เท่านั้น
-    #         (ป้องกัน clock drift / race condition ที่รอยต่อ timestamp)
-    #   6. ถ้า total == 200 (batch เต็ม) → loop ต่อทันที อาจมี trip เหลืออีก
-    # ============================================================
     @api.model
     def _cron_sync_trips(self):
+        """Cron entry point — sync trip จาก Backend เข้า Odoo (ทุก 5 นาที).
+
+        ขั้นตอน:
+          1. POST /webhook/odoo-sync ส่ง last_sync_timestamp เดิม (รอบแรก
+             ไม่ส่ง field นี้ → Backend ส่ง trip ที่ยังไม่ sync ทั้งหมด)
+          2. บันทึกแต่ละ trip ลง Odoo (write ถ้ามีอยู่แล้ว/create ถ้ายังไม่มี)
+             พร้อมดึง harsh events และอัปเดตสถิติรถ/เช็ค maintenance ของ
+             แต่ละ trip ที่บันทึกสำเร็จ
+          3. PATCH /trips/batch/mark-synced สำหรับ trip ที่บันทึกสำเร็จทั้งชุด
+          4. trip ที่บันทึกไม่สำเร็จ (failed_ids) จะไม่ถูก mark-synced เลย
+             เพื่อให้ Backend ส่งมาให้ลองใหม่อัตโนมัติในรอบ cron ถัดไป —
+             ห้าม mark-synced ให้ trip ที่ Odoo บันทึกไม่สำเร็จเด็ดขาด
+             ไม่เช่นนั้น Backend จะคิดว่า sync แล้วและไม่ส่งมาอีก
+             ทำให้ข้อมูลหายถาวรแบบเงียบๆ
+          5. เก็บ last_sync_timestamp ใหม่จาก Backend เท่านั้น (ห้ามคิดเอง
+             จาก datetime.now() — ป้องกัน clock drift) ถ้า Backend ไม่ส่ง
+             ค่าใหม่มา หรือส่งค่าเดิมซ้ำ ให้หยุด loop ทันทีป้องกันวนไม่สิ้นสุด
+          6. ถ้า total เต็ม batch (200 รายการ) วน loop ต่อทันที เผื่อมี trip
+             เหลืออีก
+        """
         cfg_model = self.env['fleet.telematics.config']
         api_url   = cfg_model.get_active_api_url()
         api_key   = cfg_model.get_active_api_key()
@@ -179,7 +174,7 @@ class TelematicsLog(models.Model):
         while True:
             loop_count += 1
 
-            # 1) POST /webhook/odoo-sync
+            # ขั้นที่ 1: ดึง trip ชุดใหม่จาก Backend
             try:
                 trips, new_ts, total = self._fetch_trips_batch(api_url, api_key, last_ts)
             except requests.RequestException as e:
@@ -198,7 +193,7 @@ class TelematicsLog(models.Model):
                 loop_count, len(trips), total, last_ts,
             )
 
-            # 2) บันทึกลง Odoo
+            # ขั้นที่ 2: บันทึกแต่ละ trip ลง Odoo
             synced_ids = []
             failed_ids = []
             for t in trips:
@@ -217,9 +212,9 @@ class TelematicsLog(models.Model):
                     else:
                         trip_rec = self.create(vals)
                     synced_ids.append(int(ext_id))
-                    # ── ข้อ 1 (Event Logs): ดึง Harsh Event ของ trip นี้จาก
-                    # Backend มาเก็บอัตโนมัติ — ทำครั้งเดียวต่อ trip (กันยิง
-                    # API ซ้ำทุกรอบ cron) ห่อ try/except ไม่ให้พัง flow หลัก
+                    # ดึง Harsh Event ของ trip นี้จาก Backend มาเก็บ — ทำครั้ง
+                    # เดียวต่อ trip (กันยิง API ซ้ำทุกรอบ cron) ห่อ try/except
+                    # ไม่ให้พัง flow หลัก
                     if not trip_rec.events_synced:
                         try:
                             self._sync_trip_events(trip_rec, api_url, api_key)
@@ -227,13 +222,9 @@ class TelematicsLog(models.Model):
                             _logger.warning(
                                 '_cron_sync_trips: ดึง events ของ trip %s ไม่สำเร็จ: %s',
                                 ext_id, e)
-                    # ── FDD §12.5 ขั้นตอนที่ 11-12 ────────────────────────────
-                    # 11. อัปเดต odometer + engine hours + สถิติสะสมของรถ
-                    # 12. ตรวจสอบ maintenance threshold → สร้าง service record
-                    # แก้ 2026-07-12: ส่ง duration_min + driver_score เข้าไปด้วย
-                    # เพื่อสะสม engine hours (Trigger 2) และ total_trips/
-                    # total_distance_km/avg_driver_score ของรถ (เดิมไม่เคย
-                    # อัปเดตเลยทั้งที่มี field อยู่แล้ว)
+                    # อัปเดต odometer + engine hours + สถิติสะสมของรถ แล้ว
+                    # ตรวจสอบ maintenance threshold → สร้าง service record
+                    # ถ้าถึงกำหนด
                     if vals.get('vehicle_id') and vals.get('distance_km'):
                         self._update_odometer_and_check_maintenance(
                             vals['vehicle_id'], vals['distance_km'],
@@ -244,7 +235,7 @@ class TelematicsLog(models.Model):
                         '_cron_sync_trips: บันทึก trip %s ล้มเหลว: %s', ext_id, e)
                     failed_ids.append(int(ext_id))
 
-            # 3) PATCH batch mark-synced
+            # ขั้นที่ 3: แจ้ง Backend ว่า trip ที่บันทึกสำเร็จ sync แล้ว (batch)
             if synced_ids:
                 try:
                     self._mark_trips_synced(api_url, api_key, synced_ids)
@@ -258,23 +249,14 @@ class TelematicsLog(models.Model):
                         cfg.write({'last_error': str(e)})
                     return
 
-            # 4) [แก้บั๊กร้ายแรง 2026-07-06] trip ใน failed_ids คือ trip ที่
-            #    "บันทึกลง Odoo ไม่สำเร็จ" (search/write/create หรือ
-            #    _update_odometer_and_check_maintenance ล้มเหลว) — ของเดิมโค้ด
-            #    ตรงนี้เรียก self._retry_single_trip(fid) ซึ่งจริงๆ แล้วคือ
-            #    PATCH /trips/{id}/mark-synced บอก Backend ว่า trip "sync
-            #    สำเร็จแล้ว" ทั้งที่ Odoo ไม่มี record นั้นอยู่จริง ทำให้ Backend
-            #    ตั้ง synced_to_odoo=true แล้วไม่ส่ง trip นั้นมาอีกเลย
-            #    → ข้อมูลหายถาวรแบบเงียบๆ (ขัดกับ FDD §15 "data loss ≤ 0.1%")
-            #
-            #    การแก้ที่ถูกต้อง: ห้ามยิง mark-synced ให้ failed_ids เด็ดขาด —
-            #    ปล่อยไว้เฉยๆ (ไม่ mark ว่า synced) เพื่อให้รอบ cron ถัดไปที่
-            #    ยิง POST /webhook/odoo-sync ดึง trip ชุดนี้กลับมาลองบันทึกใหม่
-            #    อีกครั้งโดยอัตโนมัติ (Backend ยังไม่รู้ว่า sync แล้ว จึงส่งซ้ำ
-            #    ให้เอง — นี่คือ safety net ที่ตั้งใจออกแบบไว้อยู่แล้วในระบบ)
-            #    สิ่งที่ทำได้แค่: log เป็น error (ไม่ใช่ warning เฉยๆ) +
-            #    บันทึกจำนวน/รายการไว้ใน config เพื่อให้ Fleet Manager เห็นและ
-            #    ตามสาเหตุที่แท้จริง (ข้อมูลผิดฟอร์แมต, vehicle ไม่ตรง ฯลฯ)
+            # ขั้นที่ 4: trip ที่บันทึกลง Odoo ไม่สำเร็จ (search/write/create
+            # หรือ _update_odometer_and_check_maintenance ล้มเหลว) — ห้ามยิง
+            # mark-synced ให้ trip เหล่านี้เด็ดขาด ปล่อยไว้เฉยๆ (ไม่ mark ว่า
+            # synced) เพื่อให้รอบ cron ถัดไปที่ยิง POST /webhook/odoo-sync
+            # ดึง trip ชุดนี้กลับมาลองบันทึกใหม่อีกครั้งโดยอัตโนมัติ (Backend
+            # ยังไม่รู้ว่า sync แล้ว จึงส่งซ้ำให้เอง — นี่คือ safety net ที่
+            # ตั้งใจออกแบบไว้) log เป็น error พร้อมบันทึกจำนวน/รายการไว้ใน
+            # config เพื่อให้ Fleet Manager เห็นและตามสาเหตุที่แท้จริงได้
             if failed_ids:
                 _logger.error(
                     '_cron_sync_trips: บันทึก %d trip ลง Odoo ไม่สำเร็จ '
@@ -291,10 +273,9 @@ class TelematicsLog(models.Model):
                         ),
                     })
 
-            # 5) เก็บ last_sync_timestamp ใหม่จาก Backend เท่านั้น
-            # ⚠️ ห้ามคิดเองจาก datetime.now() — ใช้ค่าจาก Backend เท่านั้น
-            # ป้องกัน loop ไม่สิ้นสุด: ถ้า Backend ไม่ส่ง new_ts กลับมา
-            # หรือส่งค่าเดิมซ้ำ → หยุด loop ทันที (ไม่ใช่สถานะปกติ)
+            # ขั้นที่ 5: เก็บ last_sync_timestamp ใหม่จาก Backend เท่านั้น
+            # ห้ามคิดเองจาก datetime.now() — ป้องกัน loop ไม่สิ้นสุด: ถ้า
+            # Backend ไม่ส่ง new_ts กลับมา หรือส่งค่าเดิมซ้ำ ให้หยุด loop ทันที
             if new_ts and new_ts != last_ts:
                 ICP.set_param(_PARAM_LAST_TS, new_ts)
                 last_ts = new_ts
@@ -309,7 +290,7 @@ class TelematicsLog(models.Model):
                     '— หยุด loop ป้องกันวนซ้ำ', new_ts, loop_count)
                 break
 
-            # 6) ถ้า total < 200 หมดแล้ว หยุด loop
+            # ขั้นที่ 6: ถ้า batch เต็ม (200 รายการ) อาจมี trip เหลืออีก วน loop ต่อ
             if total < _BATCH_FULL:
                 break
             _logger.warning(
@@ -325,14 +306,20 @@ class TelematicsLog(models.Model):
             total_synced, loop_count,
         )
 
-    # ============================================================
-    # [J] _fetch_trips_batch — POST /api/v1/webhook/odoo-sync (FDD §11.3)
-    #   - last_ts=None → รอบแรก ไม่ส่ง field นี้ Backend ส่ง trip ทั้งหมด
-    #   - last_ts มีค่า → Backend ส่งเฉพาะ trip ใหม่หลังเวลานั้น
-    #   - ค่า last_sync_timestamp ที่ส่งกลับมาต้องเก็บไว้ใช้รอบถัดไปเสมอ
-    # ============================================================
     @api.model
     def _fetch_trips_batch(self, api_url, api_key, last_ts):
+        """ดึง trip ชุดใหม่จาก Backend (POST /api/v1/webhook/odoo-sync).
+
+        Args:
+            api_url (str): Base URL ของ Backend
+            api_key (str): API Key สำหรับ header APIKEY
+            last_ts (str หรือ None): last_sync_timestamp รอบก่อน — None
+                หมายถึงรอบแรก (ไม่ส่ง field นี้ Backend จะส่ง trip ที่ยังไม่
+                sync ทั้งหมด)
+
+        Returns:
+            tuple: (trips: list[dict], new_ts: str, total: int)
+        """
         url  = f'{api_url}/api/v1/webhook/odoo-sync'
         body = {}
         if last_ts:
@@ -352,27 +339,28 @@ class TelematicsLog(models.Model):
         total  = int(data.get('total', len(trips)))
         return trips, new_ts, total
 
-    # ============================================================
-    # [L] _retry_single_trip — PATCH /api/v1/trips/{id}/mark-synced
-    #   idempotent เต็มรูปแบบ เรียกซ้ำกี่ครั้งก็ได้
-    #
-    #   ⚠️ [แก้ 2026-07-06] _cron_sync_trips() ไม่เรียกฟังก์ชันนี้อีกต่อไป —
-    #   ของเดิมเคยเรียกให้ failed_ids (trip ที่บันทึกลง Odoo ไม่สำเร็จ) ซึ่ง
-    #   ทำให้ Backend เข้าใจผิดว่า trip นั้น sync แล้ว ทั้งที่ Odoo ไม่มีจริง
-    #   → ข้อมูลหายถาวร (ดูรายละเอียดที่ comment ใน _cron_sync_trips ขั้นที่ 4)
-    #
-    #   ฟังก์ชันนี้ยังคงไว้เผื่อใช้เป็นเครื่องมือ manual สำหรับ Admin เท่านั้น
-    #   — ใช้ได้เฉพาะกรณีตรวจสอบด้วยตาแล้วว่า Odoo มี record ของ trip_id นี้
-    #   ถูกต้องสมบูรณ์จริง แต่ Backend ไม่รู้ (เช่น batch mark-synced ครั้งก่อน
-    #   ล้มเหลวบางส่วน) ห้ามเรียกกับ trip ที่ยังไม่ยืนยันว่าบันทึกสำเร็จ
-    # ============================================================
     @api.model
     def _retry_single_trip(self, api_url, api_key, trip_id):
+        """แจ้ง Backend ว่า trip ตัวเดียว sync แล้ว (PATCH /trips/{id}/mark-synced).
+
+        idempotent เต็มรูปแบบ เรียกซ้ำกี่ครั้งก็ได้ — ⚠️ ไม่ถูกเรียกจาก
+        _cron_sync_trips() แล้ว (เดิมเคยเรียกให้ trip ที่บันทึกลง Odoo
+        ไม่สำเร็จ ทำให้ Backend เข้าใจผิดว่า sync แล้วทั้งที่ไม่มีจริง —
+        ข้อมูลหายถาวร) เมธอดนี้เหลือไว้เป็นเครื่องมือ manual สำหรับ Admin
+        เท่านั้น ใช้ได้เฉพาะกรณีตรวจสอบแล้วว่า Odoo มี record ของ trip_id
+        นี้ถูกต้องสมบูรณ์จริง แต่ Backend ไม่รู้ (เช่น batch mark-synced
+        ครั้งก่อนล้มเหลวบางส่วน) ห้ามเรียกกับ trip ที่ยังไม่ยืนยันว่าบันทึก
+        สำเร็จ
+
+        Args:
+            api_url (str): Base URL ของ Backend
+            api_key (str): API Key
+            trip_id: external_trip_id ของ trip ที่จะ mark-synced
+        """
         url = f'{api_url}/api/v1/trips/{trip_id}/mark-synced'
         _logger.info('_retry_single_trip: PATCH %s', url)
 
-        # Swagger ยืนยัน (2026-07-03): ต้องส่ง synced_at ใน body
-        # ถ้าไม่ส่ง Backend จะไม่รู้ว่า sync เมื่อไหร่
+        # Backend ต้องการ synced_at ใน body ถ้าไม่ส่งจะไม่รู้ว่า sync เมื่อไหร่
         from datetime import datetime, timezone as _tz
         synced_at = datetime.now(_tz.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
 
@@ -384,19 +372,23 @@ class TelematicsLog(models.Model):
         )
         resp.raise_for_status()
 
-    # ============================================================
-    # [K] _mark_trips_synced — PATCH /api/v1/trips/batch/mark-synced
-    #
-    # - ส่ง List ของ Trip IDs (Backend ID) ที่บันทึกลง Odoo สำเร็จในรอบนี้
-    # - All-or-Nothing transaction: ถ้า trip ตัวใด update ไม่ได้
-    #   ทั้ง batch จะ rollback (ไม่ commit บางส่วน)
-    # - Idempotent: trip ที่ synced อยู่แล้วจะถูกข้ามเงียบๆ ไม่ error
-    # - ปล่อยให้ requests.RequestException ลอยขึ้นไปให้ caller จัดการ
-    #   (caller จะไม่อัปเดต last_sync_timestamp ถ้า PATCH ล้ม
-    #    → รอบหน้า Backend จะส่ง trip ชุดนี้มาอีก idempotent ปลอดภัย)
-    # ============================================================
     @api.model
     def _mark_trips_synced(self, api_url, api_key, trip_ids):
+        """แจ้ง Backend ว่า trip ทั้งชุด sync แล้ว (PATCH /trips/batch/mark-synced).
+
+        เป็น all-or-nothing transaction ฝั่ง Backend — ถ้า trip ตัวใด
+        update ไม่ได้ ทั้ง batch จะ rollback (ไม่ commit บางส่วน) และ
+        idempotent: trip ที่ synced อยู่แล้วจะถูกข้ามเงียบๆ ไม่ error
+
+        ปล่อยให้ requests.RequestException ลอยขึ้นไปให้ caller จัดการ —
+        caller จะไม่อัปเดต last_sync_timestamp ถ้า PATCH ล้ม ทำให้รอบหน้า
+        Backend ส่ง trip ชุดนี้มาอีก (idempotent ปลอดภัย)
+
+        Args:
+            api_url (str): Base URL ของ Backend
+            api_key (str): API Key
+            trip_ids (list[int]): external_trip_id ของ trip ที่ sync สำเร็จ
+        """
         url = f'{api_url}/api/v1/trips/batch/mark-synced'
 
         _logger.info('_mark_trips_synced: PATCH %s trip_ids=%s', url, trip_ids)
@@ -409,20 +401,22 @@ class TelematicsLog(models.Model):
         )
         resp.raise_for_status()
 
-    # ============================================================
-    # [M] _parse_trip_dt — แปลงสตริงเวลาจาก Backend → UTC naive datetime
-    #
-    # ⚠️ บั๊กสำคัญที่แก้จากเอกสารจริง: ตัวอย่าง response ของ Backend ส่ง
-    # trip_start/trip_end เป็น ISO 8601 "พร้อม timezone offset" เช่น
-    # "2026-06-15T08:00:00+07:00" — ไม่ใช่ string UTC เปล่า ๆ
-    # ถ้าเอาสตริงนี้ยัดลง fields.Datetime ตรง ๆ (ของเดิมทำแบบนี้) Odoo
-    # จะ parse ผิดพลาด/error เพราะ fields.Datetime ต้องการ string รูปแบบ
-    # '%Y-%m-%d %H:%M:%S' (naive, UTC) หรือ datetime object เท่านั้น
-    # จึงต้อง parse ด้วย datetime.fromisoformat() แล้วแปลงเป็น UTC +
-    # ตัด tzinfo ออกก่อนเก็บ (ตามหลัก "Datetime เก็บเป็น UTC เสมอ")
-    # ============================================================
     @api.model
     def _parse_trip_dt(self, value):
+        """แปลงสตริงเวลาจาก Backend (ISO 8601 พร้อม timezone offset เช่น
+        '2026-06-15T08:00:00+07:00') เป็น UTC naive datetime สำหรับเก็บใน
+        fields.Datetime ของ Odoo.
+
+        fields.Datetime ต้องการ string รูปแบบ '%Y-%m-%d %H:%M:%S' (naive,
+        UTC) หรือ datetime object เท่านั้น จึง parse ด้วย
+        datetime.fromisoformat() แล้วแปลงเป็น UTC + ตัด tzinfo ออกก่อนเก็บ
+
+        Args:
+            value (str): สตริงเวลาจาก Backend
+
+        Returns:
+            datetime หรือ False: False ถ้า parse ไม่ได้หรือ value ว่างเปล่า
+        """
         if not value:
             return False
         try:
@@ -434,34 +428,33 @@ class TelematicsLog(models.Model):
             _logger.warning('_parse_trip_dt: parse ไม่ได้ value=%s', value)
             return False
 
-    # ============================================================
-    # [N] _build_trip_vals — แปลง dict จาก Backend → vals dict
-    #     คืน {} ถ้าหารถไม่ได้ (caller จะ skip ให้เอง)
-    #
-    # Mapping ตาม JSON จริงจาก POST /api/v1/webhook/odoo-sync (FDD §11.3):
-    #   id (→ external_trip_id), device_id, vehicle_id, driver_id,
-    #   trip_start, trip_end, distance_km, duration_min, idle_min,
-    #   max_speed, avg_speed, harsh_*_count, speeding_count,
-    #   driver_score, fuel_used, created_at
-    #
-    # สมมติฐานสำคัญ 2 จุด (ยืนยันกับทีม Backend แล้ว):
-    #   1) 'vehicle_id' คือ Odoo record ID ของ fleet.vehicle โดยตรง
-    #      (ส่งไปให้ Backend ผ่าน PUT /config/vehicle ตอน sync รถ)
-    #   2) 'driver_id' คือ Odoo record ID ของ hr.employee โดยตรง
-    #      (ส่งไปให้ Backend ผ่าน PUT /config/vehicle → field driver_id)
-    #      อาจเป็น null/0 ถ้าทริปนั้นยังไม่ได้ assign คนขับ — ปลอดภัยแล้ว
-    #      เพราะแก้ driver_id เป็น required=False แล้ว
-    #
-    #   'duration_min' ที่ Backend ส่งมาไม่ต้องเซ็ต เพราะเป็น computed field
-    #   (calculate จาก trip_start/trip_end อัตโนมัติใน Odoo)
-    # ============================================================
     @api.model
     def _build_trip_vals(self, t):
+        """แปลง dict trip จาก Backend (POST /webhook/odoo-sync) เป็น vals
+        dict สำหรับ create()/write() ของ Odoo.
+
+        สมมติฐานสำคัญ 2 จุด (ยืนยันกับทีม Backend แล้ว):
+          1. 'vehicle_id' คือ Odoo record ID ของ fleet.vehicle โดยตรง
+             (ส่งไปให้ Backend ผ่าน PUT /config/vehicle ตอน sync รถ)
+          2. 'driver_id' คือ Odoo record ID ของ hr.employee โดยตรง อาจเป็น
+             null/0 ถ้าทริปนั้นยังไม่ได้ assign คนขับ (ปลอดภัย เพราะ
+             driver_id เป็น required=False)
+
+        'duration_min' ไม่ต้องรับจาก Backend เพราะเป็น compute field
+        (คำนวณจาก trip_start/trip_end อัตโนมัติใน Odoo)
+
+        Args:
+            t (dict): ข้อมูล 1 trip จาก Backend
+
+        Returns:
+            dict: vals พร้อมส่งให้ create()/write() — คืน {} ถ้าหารถไม่ได้
+                หรือ trip_start parse ไม่ได้ (caller จะ skip ให้เอง)
+        """
         ext_id = t.get('id')
         if not ext_id:
             return {}
 
-        # ── หา vehicle: ใช้ vehicle_id (Odoo record ID) เป็นหลัก ───────────
+        # หา vehicle: ใช้ vehicle_id (Odoo record ID) เป็นหลัก
         vehicle = self.env['fleet.vehicle']
         raw_vehicle_id = t.get('vehicle_id')
         if raw_vehicle_id:
@@ -469,7 +462,7 @@ class TelematicsLog(models.Model):
             if not vehicle.exists():
                 vehicle = self.env['fleet.vehicle']
 
-        # fallback: ถ้า vehicle_id ใช้ไม่ได้/ไม่มี ลองหาด้วย device_id แทน
+        # ถ้า vehicle_id ใช้ไม่ได้/ไม่มี ลองหาด้วย device_id แทน
         device_id_str = t.get('device_id', '')
         if not vehicle and device_id_str:
             vehicle = self.env['fleet.vehicle'].sudo().search(
@@ -482,7 +475,7 @@ class TelematicsLog(models.Model):
             )
             return {}
 
-        # ── หา driver: ใช้ driver_id (Odoo record ID) ───────────────────
+        # หา driver: ใช้ driver_id (Odoo record ID)
         driver = self.env['hr.employee']
         raw_driver_id = t.get('driver_id')
         if raw_driver_id:
@@ -524,21 +517,21 @@ class TelematicsLog(models.Model):
         }
 
 
-    # ============================================================
-    # [O2] _sync_trip_events — GET /api/v1/trips/{trip_id} → ดึง events[]
-    #
-    # เพิ่ม 2026-07-08 (Event Logs ต้อง auto-sync จากบอร์ด GPS ตามที่
-    # ผู้ตรวจงานสั่ง — เดิมโมเดล fleet.telematics.event มีอยู่แต่ไม่เคยมี
-    # โค้ดส่วนไหนดึงข้อมูลเข้ามาเก็บเลย มีแต่ปุ่มสร้าง record มือใน UI
-    # ซึ่งเป็นช่องโหว่ตรงข้ามกับ "ห้ามแก้ไข/สร้างเอง" ที่ต้องการ)
-    #
-    # ⚠️ FDD ระบุแค่ endpoint (GET /trips/{id} คืน "trip + GPS track array
-    # + events") แต่ไม่ได้ระบุ schema ของแต่ละ event ในนั้นชัดเจน — โค้ดนี้
-    # เขียนแบบ defensive เผื่อ key หลายแบบที่เป็นไปได้ (ตาม field ที่ใช้จริง
-    # ใน MQTT payload อ้างอิง §10.3: event/event_severity/ts/lat/lon) ต้อง
-    # ให้ทีม Backend ยืนยัน schema จริงของ endpoint นี้อีกครั้งก่อนใช้ production
-    # ============================================================
     def _sync_trip_events(self, trip_rec, api_url, api_key):
+        """ดึง harsh events ของ trip นี้จาก Backend มาเก็บ
+        (GET /api/v1/trips/{trip_id} คืน trip + GPS track + events).
+
+        Backend ไม่ได้ระบุ schema ของแต่ละ event ชัดเจน จึงเขียนแบบ
+        defensive รองรับ key หลายแบบที่เป็นไปได้ (event/event_type,
+        ts/timestamp/occurred_at, severity/event_severity, ฯลฯ) กันสร้าง
+        event ซ้ำด้วยการเทียบ trip_id + event_type + occurred_at ก่อน
+        create() ทุกครั้ง
+
+        Args:
+            trip_rec (recordset): fleet.telematics.log ตัวเดียว
+            api_url (str): Base URL ของ Backend
+            api_key (str): API Key
+        """
         if not trip_rec.external_trip_id:
             return
 
@@ -599,21 +592,25 @@ class TelematicsLog(models.Model):
 
         if vals_list:
             # with_context flag พิเศษ — เดียวที่ผ่าน create() override ของ
-            # fleet.telematics.event ได้ (ดู models/telematics_event.py [D])
+            # fleet.telematics.event ได้ (ดู models/telematics_event.py: _check_sync_context)
             EventModel.sudo().with_context(
                 fleet_telematics_allow_sync=True
             ).create(vals_list)
 
         trip_rec.write({'events_synced': True})
 
-    # ============================================================
-    # [O] action_load_trip_detail — GET /api/v1/trips/{trip_id}
-    #
-    # FDD §12.6: Trip Detail ต้องมีแผนที่ Leaflet + GPS track + event list
-    # ดึง GPS track จาก Backend มาเก็บใน gps_track_json เพื่อให้ widget
-    # ใน GPS Track tab อ่านและวาดแผนที่ได้
-    # ============================================================
     def action_load_trip_detail(self):
+        """โหลด GPS track ของ trip นี้จาก Backend มาเก็บใน gps_track_json
+        (GET /api/v1/trips/{trip_id}) ให้หน้าจอ GPS Track tab อ่านไปวาด
+        แผนที่ (Leaflet) ได้.
+
+        Returns:
+            dict: action แสดง notification สรุปจำนวนจุด GPS ที่ได้รับ
+
+        Raises:
+            UserError: ถ้า trip ยังไม่มี external_trip_id, ยังไม่ได้ตั้งค่า
+                API URL, หรือเรียก Backend ไม่สำเร็จ
+        """
         self.ensure_one()
         if not self.external_trip_id:
             raise UserError('Trip นี้ยังไม่มี External Trip ID — ไม่สามารถดึงจาก Backend ได้')
@@ -653,43 +650,44 @@ class TelematicsLog(models.Model):
         }
 
 
-    # ============================================================
-    # [P] _update_odometer_and_check_maintenance
-    #
-    # FDD §12.5 ขั้นตอนที่ 11-12:
-    #   11. อัปเดต fleet.vehicle odometer จาก distance_km สะสม
-    #   12. ตรวจสอบ maintenance threshold → สร้าง fleet.vehicle.log.services
-    #       ถ้าถึงกำหนด (3 trigger: ระยะทาง / ชั่วโมง / ช่วงเวลา)
-    #
-    # Trigger ซ่อมบำรุง 3 รูปแบบตาม FDD §2.2:
-    #   1) ระยะทางสะสม (เช่น ทุก 10,000 km)
-    #   2) ชั่วโมงเดินเครื่องสะสม (เช่น ทุก 250 ชั่วโมง)
-    #   3) ช่วงเวลา (เช่น ทุก 3 เดือน) — คำนวณจากวันที่ service ล่าสุด
-    #
-    # แก้ 2026-07-12: เดิม Trigger 2 (ชั่วโมงเดินเครื่อง) หายไปทั้งหมด — ไม่เคย
-    # สะสมชั่วโมงเดินเครื่องเลย ทั้งที่มี duration_min ต่อทริปอยู่แล้ว เพิ่มพารามิเตอร์
-    # duration_min เข้ามาสะสมลง fleet.vehicle.telematics_engine_hours และเพิ่ม
-    # เงื่อนไข Trigger 2 ให้ครบตาม FDD
-    #
-    # ค่า threshold ดึงจาก ir.config_parameter เพื่อให้ Admin ปรับได้
-    # ============================================================
     @api.model
     def _update_odometer_and_check_maintenance(self, vehicle_id, distance_km,
                                                 duration_min=0.0, driver_score=None):
+        """อัปเดตสถิติสะสมของรถหลัง sync ทริปแต่ละครั้ง แล้วเช็คว่าถึงกำหนด
+        แจ้งเตือนซ่อมบำรุงหรือยัง.
+
+        ขั้นตอน:
+          1. อัปเดต odometer, engine hours สะสม, total_trips,
+             total_distance_km, และ avg_driver_score (running average)
+             ของรถคันนี้
+          2. เช็ค maintenance threshold 3 รูปแบบ (ค่า threshold ดึงจาก
+             ir.config_parameter ให้ Admin ปรับได้):
+               - ระยะทางสะสมตั้งแต่ service ล่าสุด (เช่น ทุก 10,000 km)
+               - ชั่วโมงเดินเครื่องสะสมตั้งแต่ service ล่าสุด (เช่น ทุก
+                 250 ชั่วโมง)
+               - จำนวนวันตั้งแต่ service ล่าสุด (เช่น ทุก 90 วัน)
+             ถ้าถึงเกณฑ์ข้อใดข้อหนึ่ง สร้าง fleet.vehicle.log.services
+             อัตโนมัติ พร้อมแจ้งเตือนกลุ่ม Fleet Manager ผ่าน chatter
+
+        Args:
+            vehicle_id (int): id ของ fleet.vehicle
+            distance_km (float): ระยะทางของทริปที่เพิ่งบันทึก
+            duration_min (float): ระยะเวลาของทริป (นาที) สำหรับสะสม
+                engine hours
+            driver_score (float, optional): คะแนนของทริปนี้ สำหรับคำนวณ
+                avg_driver_score สะสม
+        """
         Vehicle = self.env['fleet.vehicle'].sudo().browse(vehicle_id)
         if not Vehicle.exists():
             return
 
-        # ── ขั้นตอนที่ 11: อัปเดต odometer + ชั่วโมงเดินเครื่องสะสม ────────────
+        # อัปเดต odometer + ชั่วโมงเดินเครื่องสะสม
         current_odometer = Vehicle.odometer
         new_odometer     = current_odometer + distance_km
         new_engine_hours = (Vehicle.telematics_engine_hours or 0.0) + (duration_min / 60.0)
 
-        # แก้ 2026-07-12: พบว่า total_trips/total_distance_km/avg_driver_score
-        # ของ fleet.vehicle (แท็บ Telematics Settings) ไม่เคยถูกอัปเดตจากที่ไหน
-        # เลยทั้งที่มี field อยู่แล้ว — ค่าจะค้างเป็น 0 ตลอดไปแม้จะล็อก
-        # readonly ในหน้าจอแล้วก็ตาม (ดู views/fleet_vehicle_ext_views.xml)
-        # เพิ่มการสะสมค่าตรงนี้ ณ จุดเดียวกับที่อัปเดต odometer ต่อทริป
+        # สะสม total_trips/total_distance_km/avg_driver_score ของรถ ณ จุด
+        # เดียวกับที่อัปเดต odometer ต่อทริป
         new_total_trips = (Vehicle.total_trips or 0) + 1
         new_total_km    = (Vehicle.total_distance_km or 0.0) + distance_km
         vals = {
@@ -707,7 +705,7 @@ class TelematicsLog(models.Model):
 
         Vehicle.write(vals)
 
-        # ── ขั้นตอนที่ 12: ตรวจสอบ maintenance threshold ──────────────────────
+        # เช็ค maintenance threshold 3 รูปแบบ
         ICP = self.env['ir.config_parameter'].sudo()
         km_threshold    = float(ICP.get_param('fleet_telematics.maintenance_km',    10000))
         hour_threshold  = float(ICP.get_param('fleet_telematics.maintenance_hours',  250))
@@ -730,11 +728,8 @@ class TelematicsLog(models.Model):
                 should_create = True
                 reason = f'ระยะทางสะสม {km_since:,.0f} km (threshold {km_threshold:,.0f} km)'
 
-            # Trigger 2: ชั่วโมงเดินเครื่อง — เทียบจากชั่วโมงสะสม ณ ตอน service
-            # ล่าสุด (เก็บไว้ใน description ตอนสร้าง ไม่มี field เฉพาะบน
-            # fleet.vehicle.log.services เดิม จึงประมาณจากชั่วโมงสะสมปัจจุบัน
-            # หารด้วยจำนวนครั้งที่ยังไม่ service — ใช้วิธีง่ายกว่า: เทียบ
-            # ชั่วโมงสะสมทั้งหมดกับ threshold ทบต้นทุกครั้งที่ service แล้ว
+            # Trigger 2: ชั่วโมงเดินเครื่อง — เทียบชั่วโมงสะสมทั้งหมดกับ
+            # threshold นับจากชั่วโมงสะสม ณ ตอน service ล่าสุด
             hours_since = new_engine_hours - (last_service.engine_hours_at_service or 0.0)
             if hours_since >= hour_threshold:
                 should_create = True
@@ -750,8 +745,8 @@ class TelematicsLog(models.Model):
                     reason = (reason + ' / ' if reason else '') + \
                         f'ผ่านมา {days_since} วัน (threshold {day_threshold} วัน)'
         else:
-            # ไม่มี service record เลย ถ้า odometer หรือชั่วโมงเครื่องเกิน
-            # threshold แรก → สร้าง (เช็คทั้งคู่ ไม่ใช่แค่ odometer แบบเดิม)
+            # ไม่มี service record เลย — เช็คทั้ง odometer และชั่วโมงเครื่อง
+            # เทียบกับ threshold แรก (ไม่ใช่แค่ odometer อย่างเดียว)
             if new_odometer >= km_threshold:
                 should_create = True
                 reason = f'odometer {new_odometer:,.0f} km ถึง threshold แรก {km_threshold:,.0f} km'
@@ -775,15 +770,73 @@ class TelematicsLog(models.Model):
                 Vehicle.name, vehicle_id, reason,
             )
 
-            # ส่ง Odoo notification ให้ Fleet Manager ทราบ
-            managers = self.env.ref('fleet.fleet_group_manager').users
-            if managers:
+            # ส่ง Odoo notification ให้ Fleet Manager ทราบ — หาผู้ใช้ในกลุ่ม
+            # Fleet Manager ผ่าน query จาก res.users โดยตรง (เช็คชื่อ field
+            # เชื่อมกลุ่มที่มีอยู่จริงก่อนใช้งาน เพราะ Odoo เปลี่ยนชื่อ field
+            # นี้ไปมาระหว่างเวอร์ชัน) พร้อม wrap body ด้วย Markup() ให้ HTML
+            # tag render ถูกต้อง
+            managers_group = self.env.ref('fleet.fleet_group_manager', raise_if_not_found=False)
+            manager_users = self.env['res.users']
+            if managers_group:
+                User = self.env['res.users']
+                for fname in ('groups_id', 'group_ids'):
+                    if fname in User._fields:
+                        manager_users = User.sudo().search([(fname, 'in', managers_group.ids)])
+                        break
+
+            if manager_users:
+                body = Markup(
+                    '🔧 <b>แจ้งเตือนซ่อมบำรุงอัตโนมัติ</b><br/>'
+                    'รถ: <b>{vehicle}</b><br/>'
+                    'เหตุผล: {reason}<br/>'
+                    'Odometer ปัจจุบัน: {odo} km'
+                ).format(vehicle=Vehicle.name, reason=reason, odo=f'{new_odometer:,.0f}')
                 service_rec.sudo().message_post(
-                    body=f'🔧 <b>แจ้งเตือนซ่อมบำรุงอัตโนมัติ</b><br/>'
-                         f'รถ: {Vehicle.name}<br/>'
-                         f'เหตุผล: {reason}<br/>'
-                         f'Odometer ปัจจุบัน: {new_odometer:,.0f} km',
-                    partner_ids=managers.mapped('partner_id').ids,
+                    body=body,
+                    partner_ids=manager_users.partner_id.ids,
                     message_type='notification',
                     subtype_xmlid='mail.mt_note',
                 )
+            else:
+                _logger.warning(
+                    '_check_maintenance: ไม่พบผู้ใช้ในกลุ่ม Fleet Manager ที่จะแจ้งเตือน '
+                    '(vehicle_id=%s)', vehicle_id,
+                )
+    @api.model
+    def _cron_purge_old_trips(self):
+        """ลบ Trip Log ที่เก่ากว่า retention period ทิ้ง (Data Retention Policy).
+
+        ขอบเขตความรับผิดชอบ: "raw telemetry" (ข้อมูลดิบจาก MQTT) เก็บอยู่
+        ใน TimescaleDB ฝั่ง Backend เท่านั้น ไม่เคยถูกเก็บใน Odoo — การลบ
+        ส่วนนั้นเป็นหน้าที่ของทีม Backend ไม่ใช่โมดูลนี้ ส่วนที่ Odoo
+        รับผิดชอบคือ "trip summary" (fleet.telematics.log) เท่านั้น —
+        Event ที่ผูกอยู่จะถูกลบตามไปด้วยอัตโนมัติผ่าน ondelete='cascade'
+        ไม่ต้องเขียนโค้ดลบแยก
+
+        ไม่แตะ fleet.telematics.incentive เด็ดขาด (เก็บตลอดชีพ ไม่มี
+        retention)
+
+        ระยะเวลาเก็บ (ปี) ปรับได้ผ่าน ir.config_parameter
+        'fleet_telematics.trip_retention_years' (ค่าเริ่มต้น 3 ปี)
+        """
+        ICP = self.env['ir.config_parameter'].sudo()
+        retention_years = int(ICP.get_param('fleet_telematics.trip_retention_years', 3))
+
+        from dateutil.relativedelta import relativedelta
+        cutoff = fields.Datetime.now() - relativedelta(years=retention_years)
+
+        old_trips = self.sudo().search([('trip_start', '<', cutoff)])
+        count = len(old_trips)
+
+        if count:
+            _logger.info(
+                '_cron_purge_old_trips: กำลังลบ Trip Log ที่เก่ากว่า %s ปี '
+                '(ก่อน %s) จำนวน %s รายการ (Event ที่ผูกอยู่จะถูกลบตามด้วย '
+                'ผ่าน cascade)', retention_years, cutoff, count,
+            )
+            old_trips.with_context(fleet_telematics_allow_purge=True).unlink()
+        else:
+            _logger.info(
+                '_cron_purge_old_trips: ไม่พบ Trip Log ที่เก่ากว่า %s ปี — '
+                'ไม่มีอะไรต้องลบ', retention_years,
+            )

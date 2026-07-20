@@ -1,7 +1,11 @@
-# ==============================================================================
 # __manifest__.py — Fleet Telematics Integration
-# ลงทะเบียนโมดูล กำหนดข้อมูลผู้พัฒนา และ depends: fleet, hr
-# ==============================================================================
+#
+# ลงทะเบียนโมดูล กำหนดข้อมูลผู้พัฒนา, dependencies, และไฟล์ข้อมูล/asset
+# ทั้งหมดที่โมดูลนี้โหลด
+#
+# หมายเหตุ: ไฟล์นี้ต้องมีแค่ dict literal เดียวเท่านั้น (ห้ามมี docstring
+# หรือ statement อื่นปนอยู่) เพราะ Odoo อ่านไฟล์นี้ด้วย ast.literal_eval
+# ซึ่งต้องการ single expression เท่านั้น ใส่คำอธิบายได้แค่แบบ comment (#)
 {
     'name': 'Fleet Telematics Integration',
     'version': '19.0.1.0.0',
@@ -14,8 +18,8 @@
         'fleet',
         'hr',
         'web',
-        'mail',     # เพิ่ม 2026-07-06 — UC-10 Audit Log (mail.thread บน Incentive)
-        'portal',   # เพิ่ม 2026-07-06 — UC-11 Self-service ผ่าน Odoo Portal
+        'mail',     # UC-10 Audit Log (mail.thread บน Incentive)
+        'portal',   # UC-11 Self-service ผ่าน Odoo Portal
     ],
 
     # controllers/ ไม่ต้องระบุใน data — Odoo โหลดอัตโนมัติผ่าน __init__.py
@@ -24,7 +28,7 @@
 
         # 1. Security — เปิดสิทธิ์ Read/Write/Create ให้โมเดลที่สร้างใหม่
         'security/ir.model.access.csv',
-        'security/telematics_security.xml',   # Record Rules — driver เห็นแค่ตัวเอง (เพิ่มใหม่)
+        'security/telematics_security.xml',   # Record Rules — driver เห็นแค่ตัวเอง
 
         # 2. Cron Jobs — ตั้งเวลา Scheduled Action ดึง API ทุก 5 นาที
         'data/telematics_cron.xml',
@@ -32,24 +36,24 @@
         # 3. Views — หน้าจอ UI ทั้งหมด
         'views/telematics_config_views.xml',
         'views/fleet_vehicle_ext_views.xml',
-        'views/telematics_device_views.xml',  # UC-01 Device Register (เพิ่มใหม่)
-        'views/telematics_report_views.xml',  # UC-07/08 Backend Report Wizard (เดิม)
+        'views/telematics_device_views.xml',  # UC-01 Device Register
+        'views/telematics_report_views.xml',  # UC-07/08 Backend Report Wizard
         'views/telematics_backend_report_views.xml',  # Backend Reports ครบทุก API
         'views/telematics_vehicle_trip_views.xml',  # Vehicle Trip History wizard
 
-        # 3b. QWeb PDF Reports (FDD §12.6)
+        # 3b. QWeb PDF Reports
         'reports/energy_report.xml',        # Energy/Fuel Efficiency PDF
         'reports/driver_score_report.xml',  # Monthly Score & Bonus PDF
         'views/telematics_log_views.xml',
         'views/telematics_event_views.xml',
         'views/telematics_scoring_views.xml',
         'views/telematics_incentive_views.xml',
-        'views/telematics_payload_views.xml',  # เปิดใช้งานแล้ว 2026-06-30 (เดิมเป็น dead code)
+        'views/telematics_payload_views.xml',
 
         # 4. Menu — แถบเมนูหลักและเมนูย่อย
         'views/telematics_menus.xml',
 
-        # 5. Portal — พนักงานดูคะแนน/โบนัสตนเอง (UC-11, FDD §2.3 Self-service)
+        # 5. Portal — พนักงานดูคะแนน/โบนัสตนเอง (UC-11, Self-service)
         'views/portal_templates.xml',
     ],
 
@@ -70,6 +74,5 @@
     },
 
     # Seed ค่า Base URL / API Key จริงลง ir.config_parameter ตอนติดตั้งโมดูล
-    # ดูคำเตือนเรื่องความปลอดภัยของ API Key ที่ฝังในโค้ดได้ที่ __init__.py
     'post_init_hook': '_post_init_seed_telematics_config',
 }
