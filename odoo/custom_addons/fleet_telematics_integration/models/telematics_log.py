@@ -189,7 +189,7 @@ class TelematicsLog(models.Model):
                         trip_rec = existing
                     else:
                         trip_rec = self.create(vals)
-                    synced_ids.append(int(ext_id))
+                    synced_ids.append(ext_id)
 
                     # ดึงเหตุการณ์เสี่ยงของทริปนี้มาเก็บอัตโนมัติ — ทำครั้ง
                     # เดียวต่อทริป (กันยิง API ซ้ำทุกรอบ cron) ห่อ try/except
@@ -212,7 +212,7 @@ class TelematicsLog(models.Model):
                 except Exception as e:
                     _logger.warning(
                         '_cron_sync_trips: บันทึก trip %s ล้มเหลว: %s', ext_id, e)
-                    failed_ids.append(int(ext_id))
+                    failed_ids.append(ext_id)
 
             if synced_ids:
                 try:

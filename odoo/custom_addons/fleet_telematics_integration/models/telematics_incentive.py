@@ -324,7 +324,10 @@ class TelematicsIncentive(models.Model):
         elif cfg and self.avg_score >= cfg.tier_c_min_score:
             tier, pct = 'C', cfg.tier_c_bonus_pct
         else:
-            tier, pct = 'D', 0.0
+            # ใช้ tier_d_bonus_pct จาก config ถ้ามี (ให้ตรงกับที่ Admin ตั้งไว้
+            # ในหน้าจอ) ไม่ hardcode 0.0 ตรงๆ — เผื่อ Admin ปรับ Tier D ให้
+            # ได้โบนัสบางส่วนแทนที่จะเป็น 0% เสมอ
+            tier, pct = 'D', (cfg.tier_d_bonus_pct if cfg else 0.0)
         return (tier, pct) if return_pct else tier
 
     def _notify_hr_tier_d(self):
@@ -394,7 +397,12 @@ class TelematicsIncentive(models.Model):
         """แจ้งเตือน HR/Fleet Manager ว่ามีใบโบนัส Draft รอตรวจสอบ — ตาม
         FDD §12.4 ขั้นตอนที่ 4 ของ Incentive Workflow เรียกครั้งเดียวต่อรอบ
         cron (ไม่แยกอีเมลต่อพนักงาน) สรุปจำนวนทั้งหมดในข้อความเดียว —
-        คนละฟังก์ชันกับ _notify_hr_tier_d() ที่แจ้งเฉพาะกรณี Tier D"""
+        คนละฟังก์ชันกับ _notify_hr_tier_d() ที่แจ้งเฉพาะกรณี Tier D
+
+        แจ้ง 2 ช่องทางเหมือน _notify_hr_tier_d(): (1) message_post() ลง
+        chatter ของใบโบนัสแต่ละใบในชุดนี้ ให้เห็นประวัติแจ้งเตือนติดกับ
+        เอกสาร และ (2) message_notify() ส่งตรงถึงผู้ใช้กลุ่ม Fleet Manager
+        """
         if not self:
             return
 
@@ -411,6 +419,12 @@ class TelematicsIncentive(models.Model):
             count=len(self), names=driver_names, more=more,
         )
 
+        # (1) บันทึกลง chatter ของทุกใบโบนัสในชุดนี้ — ทำให้ message_ids ของ
+        # แต่ละ record เพิ่มขึ้นจริง (message_notify อย่างเดียวไม่พอ เพราะ
+        # ไม่ผูกเข้ากับ thread ของ record แต่ละตัวในชุด)
+        for rec in self:
+            rec.message_post(body=body)
+
         managers_group = self.env.ref('fleet.fleet_group_manager', raise_if_not_found=False)
         manager_users = self.env['res.users']
         if managers_group:
@@ -421,7 +435,8 @@ class TelematicsIncentive(models.Model):
                     break
 
         if manager_users:
-            # ใช้ record แรกเป็นตัวโพสต์ (message_notify ต้องมี record เดียว
+            # (2) ส่งแจ้งเตือนตรงถึงผู้ใช้กลุ่ม Fleet Manager เพิ่มอีกทาง —
+            # ใช้ record แรกเป็นตัวส่ง (message_notify ต้องมี record เดียว
             # ไม่ใช่ recordset หลายตัว) พร้อมแนบสรุปทั้งหมดไว้ใน body
             self[0].message_notify(
                 partner_ids=manager_users.partner_id.ids,

@@ -32,8 +32,9 @@ class TelematicsVehicleTripHistory(models.TransientModel):
     vehicle_id = fields.Many2one(
         'fleet.vehicle',
         string='รถ',
-        required=True,
-        help='ค้นหาและเลือกรถจาก ชื่อรุ่นรถ / ทะเบียนรถ / ชื่อพนักงานขับรถ',
+        help='ค้นหาและเลือกรถจาก ชื่อรุ่นรถ / ทะเบียนรถ / ชื่อพนักงานขับรถ '
+             '— ตรวจสอบว่าเลือกแล้วหรือยังใน action_fetch() แทนการบังคับที่ '
+             'ระดับฐานข้อมูล เพื่อให้แจ้งเตือนด้วยข้อความที่เข้าใจง่ายกว่า',
     )
     # field readonly ไว้ยืนยันข้อมูลรถที่เลือก แสดงคู่กับ vehicle_id
     vehicle_license_plate = fields.Char(
