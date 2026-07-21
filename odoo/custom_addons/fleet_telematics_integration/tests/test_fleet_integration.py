@@ -876,6 +876,17 @@ class TestUC10IncentiveAuditLog(FleetTelematicsBase):
         batch._notify_hr_new_drafts_batch(3, 2026)
         self.assertGreater(len(inc1.message_ids), n_before)
 
+    def test_19_local_tier_fallback_uses_configured_tier_d_bonus_pct(self):
+        """_local_tier_from_score() (ใช้ตอนเรียก Backend ไม่สำเร็จ) ต้องอ่าน
+        tier_d_bonus_pct จาก Scoring Config จริง ไม่ใช่ hardcode เป็น 0.0
+        เสมอ — ถ้า Admin ตั้งค่าไว้ไม่ใช่ 0 ผลลัพธ์ fallback ต้องตรงกัน"""
+        cfg = self._make_scoring('UC10-19', active=True, tier_c_min_score=60.0,
+                                  tier_d_bonus_pct=2.5)
+        inc = self._make_incentive(avg_score=40.0, scoring_config_id=cfg.id)
+        tier, pct = inc._local_tier_from_score(return_pct=True)
+        self.assertEqual(tier, 'D')
+        self.assertEqual(pct, 2.5)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # UC-12 — Verify Device (GET /vehicles/{id}/device) — fleet_vehicle_ext.py
@@ -908,18 +919,34 @@ class TestUC12VerifyDevice(FleetTelematicsBase):
         self.assertIn('KTC-DIFFERENT-99', self.v1.device_verify_note)
 
     def test_03_backend_404_raises_and_flags_mismatch_if_odoo_has_device(self):
+        """ใช้ try/except ธรรมดาแทน self.assertRaises() ของ Odoo — เพราะ
+        self.assertRaises() ของ Odoo (TransactionCase) ตั้ง savepoint ก่อน
+        เข้า block แล้ว rollback กลับไปที่ savepoint นั้นทันทีที่จับ
+        exception ที่คาดไว้ได้เสมอ (ออกแบบมาเพื่อกันโค้ดที่ทดสอบ error ทิ้ง
+        ข้อมูลเพี้ยนไว้) ซึ่งจะ rollback การ write() ของ
+        action_verify_device() ทิ้งไปด้วยทั้งที่ตั้งใจให้ mismatch flag รอด
+        อยู่เป็นหลักฐาน — try/except ของ Python เฉยๆ ไม่มีกลไกนี้ จึงใช้
+        แทนได้ถูกต้องกว่าสำหรับเคสนี้โดยเฉพาะ"""
         from odoo.exceptions import UserError
         with patch('requests.get', return_value=self._mock_resp(404)):
-            with self.assertRaises(UserError):
+            try:
                 self.v1.action_verify_device()
+                self.fail('คาดว่าต้อง raise UserError แต่ไม่ raise')
+            except UserError:
+                pass
         self.assertTrue(self.v1.device_verify_mismatch)
 
     def test_04_connection_error_raises_and_flags_mismatch(self):
+        """เหตุผลเดียวกับ test_03 — ใช้ try/except แทน self.assertRaises()
+        ของ Odoo เพื่อไม่ให้ค่าที่ write() ไว้ก่อน raise ถูก rollback ทิ้ง"""
         import requests as _requests
         from odoo.exceptions import UserError
         with patch('requests.get', side_effect=_requests.RequestException('timeout')):
-            with self.assertRaises(UserError):
+            try:
                 self.v1.action_verify_device()
+                self.fail('คาดว่าต้อง raise UserError แต่ไม่ raise')
+            except UserError:
+                pass
         self.assertTrue(self.v1.device_verify_mismatch)
         self.assertIn('เรียก Backend ไม่สำเร็จ', self.v1.device_verify_note)
 
