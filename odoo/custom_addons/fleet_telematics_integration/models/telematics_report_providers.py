@@ -21,15 +21,12 @@ _logger = logging.getLogger(__name__)
 
 
 def _fetch_backend_summary(env, path):
-    """Helper ใช้ร่วมกัน — GET ไป Backend พร้อม JWT คืน (data, error)"""
+    """Helper ใช้ร่วมกัน — GET ไป Backend พร้อม APIKEY header คืน (data, error)"""
     Config = env['fleet.telematics.config']
     api_url = Config.get_active_api_url()
     if not api_url:
         return None, 'ยังไม่ได้ตั้งค่า Backend API URL'
-    try:
-        headers = Config.get_auth_headers()
-    except Exception as e:
-        return None, f'Login ไม่สำเร็จ: {e}'
+    headers = {'APIKEY': Config.get_active_api_key()}
     try:
         resp = requests.get(f'{api_url}{path}', headers=headers, timeout=15)
         resp.raise_for_status()

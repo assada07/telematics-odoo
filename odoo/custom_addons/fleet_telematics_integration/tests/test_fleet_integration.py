@@ -87,9 +87,9 @@ class FleetTelematicsBase(TransactionCase):
         # deactivate ที่มีอยู่ก่อน (ถ้า active=True)
         if active:
             self.env['fleet.telematics.scoring.config'].search(
-                [('active', '=', True)]).write({'active': False})
+                [('is_active', '=', True)]).write({'is_active': False})
         vals = dict(
-            name=name, active=active, effective_date='2025-01-01',
+            name=name, is_active=active, effective_date='2025-01-01',
             score_base=100.0, max_deduct_per_trip=50.0,
             harsh_brake_deduct=5.0, harsh_accel_deduct=3.0,
             harsh_corner_deduct=3.0, speeding_deduct=10.0,
@@ -235,7 +235,7 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
         self.assertEqual(cfg.score_base,         100.0)
         self.assertEqual(cfg.harsh_brake_deduct,   5.0)
         self.assertEqual(cfg.tier_a_min_score,    90.0)
-        self.assertTrue(cfg.active)
+        self.assertTrue(cfg.is_active)
 
     def test_02_only_one_active_config_allowed(self):
         """Active ScoringConfig ได้เพียง 1 รายการ → รายการที่ 2 ต้อง raise"""
@@ -243,7 +243,7 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
         with self.assertRaises(ValidationError) as ctx:
             # ไม่ผ่าน _make_scoring เพราะมัน deactivate ให้อัตโนมัติ
             self.env['fleet.telematics.scoring.config'].create({
-                'name': 'UC02-02B', 'active': True,
+                'name': 'UC02-02B', 'is_active': True,
                 'effective_date': '2025-01-01',
                 'score_base': 100.0, 'max_deduct_per_trip': 50.0,
                 'harsh_brake_deduct': 5.0, 'harsh_accel_deduct': 3.0,
@@ -324,10 +324,10 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
     def test_09_deactivate_then_activate_new(self):
         """Deactivate config เดิม แล้ว active ใหม่ → ต้องสำเร็จ"""
         c1 = self._make_scoring('UC02-09A', active=True)
-        c1.write({'active': False})
+        c1.write({'is_active': False})
         c2 = self._make_scoring('UC02-09B', active=True)
-        self.assertTrue(c2.active)
-        self.assertFalse(c1.active)
+        self.assertTrue(c2.is_active)
+        self.assertFalse(c1.is_active)
 
     # ── เพิ่ม 2026-07-08: ทดสอบกฎความเร็วแยกโซน (บรีฟข้อ 2) ────────────────
     def test_10_speed_limit_zone_defaults(self):
@@ -367,7 +367,7 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
     def test_15_edit_allowed_after_deactivate(self):
         """ปิด active ก่อน แล้วแก้ไข field เกณฑ์คะแนน → ต้องสำเร็จ"""
         cfg = self._make_scoring('UC02-15', active=True)
-        cfg.write({'active': False})
+        cfg.write({'is_active': False})
         cfg.write({'score_base': 88.0})
         self.assertEqual(cfg.score_base, 88.0)
 
@@ -391,8 +391,8 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
         # ทดสอบมือผ่าน UI จริงมาก่อนหน้า) จะชนกับ constraint ทันที ต้อง
         # deactivate ของเดิมก่อนเหมือนที่ _make_scoring ทำให้ตอน create
         self.env['fleet.telematics.scoring.config'].search(
-            [('active', '=', True), ('id', '!=', cfg.id)]).write({'active': False})
-        cfg.write({'active': True})
+            [('is_active', '=', True), ('id', '!=', cfg.id)]).write({'is_active': False})
+        cfg.write({'is_active': True})
         self.assertTrue(cfg.is_locked)
 
     def test_17b_active_default_false_on_new_record(self):
@@ -409,7 +409,7 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
             'tier_b_min_score': 75.0, 'tier_b_bonus_pct': 5.0,
             'tier_c_min_score': 60.0, 'tier_c_bonus_pct': 0.0,
         })
-        self.assertFalse(cfg.active)
+        self.assertFalse(cfg.is_active)
         self.assertFalse(cfg.is_locked)
 
     # ── เพิ่ม 2026-07-08: ทดสอบ Approval workflow (บรีฟ "กำหนดผู้อนุมัติ") ──
@@ -426,6 +426,28 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
         self.assertTrue(cfg.approved_by_id)
         self.assertTrue(cfg.approved_at)
 
+    # ── เพิ่ม: Approve ต้องติ๊ก Active ให้อัตโนมัติ และปิด Active ของ config
+    # เดิมให้เองโดยไม่ลบทิ้ง (แก้ตามที่ผู้ใช้ขอ 2026-07-24) ─────────────────
+    def test_19b_approve_auto_activates_config(self):
+        """Approve แล้ว Active ต้องเป็น True ทันทีโดยไม่ต้องติ๊กเอง"""
+        cfg = self._make_scoring('UC02-19B', active=False)
+        self.assertFalse(cfg.is_active)
+        cfg.action_approve()
+        self.assertTrue(cfg.is_active)
+
+    def test_19c_approve_auto_deactivates_previous_config_without_deleting(self):
+        """Approve config ใหม่ตอนมี config เดิม Active อยู่ → ต้องปิด Active
+        ของเดิมให้อัตโนมัติ (ไม่ raise error) แต่ยังคงเก็บ record เดิมไว้ครบ"""
+        old_cfg = self._make_scoring('UC02-19C-OLD', active=True)
+        new_cfg = self._make_scoring('UC02-19C-NEW', active=False)
+        new_cfg.action_approve()
+
+        self.assertTrue(new_cfg.is_active)
+        self.assertFalse(old_cfg.is_active)
+        # config เดิมยังอยู่ในระบบ ไม่ได้ถูกลบ
+        self.assertTrue(old_cfg.exists())
+        self.assertEqual(old_cfg.name, 'UC02-19C-OLD')
+
     def test_20_push_after_approval_succeeds(self):
         """Approve แล้ว Push ต้องผ่านจุดเช็ค approval ไปถึงขั้นยิง API"""
         cfg = self._make_scoring('UC02-20', active=False)
@@ -439,6 +461,63 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
         self.assertTrue(cfg.last_push_at)
         self.assertIn('OK', cfg.last_push_status)
 
+    # ── เพิ่ม: แก้บั๊ก 2026-07-24 — action_push_to_backend เดิมไม่ได้ส่ง
+    # APIKEY header ไปด้วย ทำให้ Backend ตอบ 403 Forbidden เสมอ ─────────────
+    def test_20b_push_sends_apikey_header(self):
+        """action_push_to_backend() ต้องส่ง header APIKEY ไปพร้อม POST เสมอ
+        (เดิมลืมใส่ทำให้ Backend ปฏิเสธด้วย 403 Forbidden)"""
+        cfg = self._make_scoring('UC02-20B', active=False)
+        cfg.action_approve()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {'config': {'config_name': cfg.name}}
+        mock_resp.raise_for_status.return_value = None
+        with patch('requests.post', return_value=mock_resp) as mock_post:
+            cfg.action_push_to_backend()
+        _, kwargs = mock_post.call_args
+        self.assertIn('APIKEY', kwargs.get('headers', {}))
+        self.assertEqual(kwargs['headers']['APIKEY'], 'TEST-KEY')
+
+    # ── เพิ่ม: ปิด Active ต้องเก็บข้อมูล/ผู้อนุมัติไว้ครบ ไม่ล้างทิ้ง
+    # (popup ยืนยันอยู่ที่ระดับปุ่มในฟอร์ม ไม่ใช่ระดับโมเดล จึงทดสอบแค่ว่า
+    # ข้อมูลไม่หายหลัง action_deactivate() เท่านั้น) ──────────────────────
+    def test_20c_deactivate_keeps_all_data(self):
+        """action_deactivate() ต้องปิดแค่ active เท่านั้น ผู้อนุมัติ/วันที่
+        อนุมัติ/ค่าที่กรอกไว้ทั้งหมดต้องยังอยู่ครบ ไม่ถูกล้าง"""
+        cfg = self._make_scoring('UC02-20C', active=False)
+        cfg.action_approve()
+        self.assertTrue(cfg.is_active)
+        approver = cfg.approved_by_id
+        approved_time = cfg.approved_at
+
+        cfg.action_deactivate()
+
+        self.assertFalse(cfg.is_active)
+        self.assertEqual(cfg.approved_by_id, approver)
+        self.assertEqual(cfg.approved_at, approved_time)
+        self.assertEqual(cfg.score_base, 100.0)
+        self.assertEqual(cfg.tier_a_min_score, 90.0)
+
+    # ── เพิ่ม: กด Approve ซ้ำได้หลังจากเคย Approve+ปิด Active ไปแล้ว เพื่อ
+    # "เปิดใช้งานอีกครั้ง" config ชุดเดิม ไม่ต้องสร้างใหม่ (แก้ตามที่ผู้ใช้
+    # ขอ 2026-07-24 — เดิมปุ่ม Approve หายถาวรในหน้าจอหลัง approved_by_id
+    # ถูกตั้งค่าแล้วครั้งแรก แก้ที่ระดับ view ไม่ใช่ Python จึงไม่มีจุดใดใน
+    # action_approve() ที่ต้องแก้ แต่ทดสอบยืนยันว่าเรียกซ้ำได้จริงไว้กันย้อน) ──
+    def test_20d_reapprove_after_deactivate_reactivates_config(self):
+        """เคย Approve+Active ไปแล้ว → ปิด Active → Approve ซ้ำอีกครั้ง ต้อง
+        กลับมา Active=True ได้ปกติ ไม่มี error ใดๆ (ใช้ config ชุดเดิมซ้ำ)"""
+        cfg = self._make_scoring('UC02-20D', active=False)
+        cfg.action_approve()
+        self.assertTrue(cfg.is_active)
+
+        cfg.action_deactivate()
+        self.assertFalse(cfg.is_active)
+
+        # Approve ซ้ำอีกครั้ง (เหมือนกด Approve ปุ่มที่กลับมาโผล่ในหน้าจอ)
+        cfg.action_approve()
+        self.assertTrue(cfg.is_active)
+        self.assertTrue(cfg.approved_by_id)
+
     # ── เพิ่มตาม FDD §12.3/§12.5: Tier D fields + History tracking ────────
     def test_21_tier_d_fields_exist_and_editable(self):
         """Tier D ต้องมี field ปรับได้เหมือน A/B/C (ไม่ใช่ hardcode) และ
@@ -448,8 +527,8 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
         self.assertEqual(cfg.tier_d_bonus_pct, 2.5)
 
         self.env['fleet.telematics.scoring.config'].search(
-            [('active', '=', True), ('id', '!=', cfg.id)]).write({'active': False})
-        cfg.write({'active': True})
+            [('is_active', '=', True), ('id', '!=', cfg.id)]).write({'is_active': False})
+        cfg.write({'is_active': True})
         with self.assertRaises(UserError):
             cfg.write({'tier_d_bonus_pct': 5.0})
 

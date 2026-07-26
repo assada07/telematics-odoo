@@ -401,7 +401,16 @@ class FleetVehicleExt(models.Model):
         กรณีเชื่อมต่อ Backend ไม่ได้ หรือ Backend ตอบ 404 (ไม่รู้จักรถคันนี้
         เลย) ถือเป็น mismatch เสมอไม่มีเงื่อนไข เพราะทั้งสองกรณีคือสัญญาณ
         ว่าข้อมูลไม่ตรงกันแน่นอน ไม่ว่า Odoo จะมีค่า telematics_device_id
-        อยู่หรือไม่ก็ตาม"""
+        อยู่หรือไม่ก็ตาม
+
+        หมายเหตุการทดสอบ: ถ้าเทสของฟังก์ชันนี้ครอบด้วย self.assertRaises()
+        ของ Odoo (ไม่ใช่ try/except ของ Python เฉยๆ) ค่าที่ write() ไว้ตรงนี้
+        จะถูก rollback ทิ้งไปเสมอทันทีที่จับ UserError ได้ — เพราะ
+        self.assertRaises() ของ Odoo (TransactionCase) ตั้ง savepoint ก่อน
+        เข้า block แล้ว rollback กลับไปที่นั่นทันทีที่จับ exception ที่คาดไว้
+        ได้ (กันโค้ดทดสอบ error ทิ้งข้อมูลเพี้ยนไว้) เทสของฟังก์ชันนี้จึงต้อง
+        ใช้ try/except ธรรมดาแทน ดู tests/test_fleet_integration.py:
+        TestUC12VerifyDevice.test_03/test_04"""
         self.ensure_one()
 
         api_url, api_key = self._get_api_credentials()

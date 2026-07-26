@@ -316,7 +316,7 @@ class TelematicsIncentive(models.Model):
         ใช้เฉพาะตอนเรียก Backend ไม่สำเร็จเท่านั้น"""
         self.ensure_one()
         cfg = self.scoring_config_id or self.env['fleet.telematics.scoring.config'].search(
-            [('active', '=', True)], limit=1)
+            [('is_active', '=', True)], limit=1)
         if cfg and self.avg_score >= cfg.tier_a_min_score:
             tier, pct = 'A', cfg.tier_a_bonus_pct
         elif cfg and self.avg_score >= cfg.tier_b_min_score:
@@ -600,7 +600,7 @@ class TelematicsIncentive(models.Model):
         ) - timedelta(days=1)  # date_to คือวันสุดท้ายที่ "รวม" อยู่ในช่วง
 
         cfg = self.env['fleet.telematics.scoring.config'].sudo().search(
-            [('active', '=', True)], limit=1)
+            [('is_active', '=', True)], limit=1)
 
         TripLog     = self.env['fleet.telematics.log'].sudo()
         date_to_excl = date_to + timedelta(days=1)

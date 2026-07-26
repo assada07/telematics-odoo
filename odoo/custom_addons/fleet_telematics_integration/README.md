@@ -5,8 +5,10 @@
 
 > **สถานะ:** ผ่านการติดตั้งและทดสอบบน Odoo 19 instance จริงแล้ว พบและแก้
 > บั๊กจริงหลายจุดระหว่างทาง (ดูรายละเอียดทั้งหมดใน `docs/known_risks.md`)
-> ยังเหลืออีก 2 จุดที่ต้องยืนยันกับทีม Backend โดยตรง (JWT schema) และ
-> ยังไม่ได้วัด Test Coverage เป็นตัวเลข % อย่างเป็นทางการ
+> ยังเหลือ Test Coverage ที่ยังไม่ได้วัดเป็นตัวเลข % อย่างเป็นทางการ และ
+> ยังไม่ได้ยืนยันกับ Supervisor ว่า unique constraint ของ Incentive ที่
+> เปลี่ยนจาก period_month/period_year เป็น date_from/date_to ให้ใช้ต่อหรือ
+> ต้องย้อนกลับตาม FDD เดิม
 
 ---
 
@@ -61,8 +63,22 @@ odoo-bin -c odoo.conf -d <your_db> --test-enable \
 
 ### 4.3 ตั้งค่า Scoring (UC-02)
 เมนู **Fleet Telematics > Scoring Config** — ปรับน้ำหนักการหักคะแนนและ
-threshold ต่างๆ ได้ที่นี่ (มีได้ config เดียวที่ active พร้อมกัน ต้อง Approve
-ก่อนถึงจะ Push ไป Backend ได้)
+threshold ต่างๆ ได้ที่นี่ (มีได้ config เดียวที่ active พร้อมกัน)
+ปุ่มด้านบนมี 2 สถานะ:
+- **ตอนยังไม่ Active** — เห็น 3 ปุ่ม: **⚡ Test Connection → ✅ Approve →
+  💾 Push Config** กดตามลำดับได้เลย (กด Push Config ก่อน Approve ระบบจะเตือน
+  ให้ Approve ก่อน) ปุ่ม Approve กดซ้ำได้ทุกครั้งที่ยังไม่ Active แม้เคย
+  Approve ไปแล้วก่อนหน้า ใช้สำหรับ "เปิดใช้งานอีกครั้ง" config ชุดเดิมได้
+  ง่ายๆ โดยไม่ต้องสร้างใหม่ (เช่น เคย Approve+Push ไปแล้ว แล้วปิด Active ไว้
+  ทีหลังอยากกลับมาใช้ config ชุดนี้อีกครั้ง ก็กด Approve ซ้ำได้เลย)
+- **ตอน Active แล้ว** — เหลือแค่ปุ่ม **🔓 ปิด Active** ปุ่มเดียว (ฟอร์มถูกล็อก
+  แก้ไขเกณฑ์คะแนนไม่ได้อยู่แล้ว จึงไม่มี Test Connection/Push Config ให้กด)
+
+กด **✅ Approve** (เฉพาะ Fleet Manager) แล้วระบบจะติ๊ก **Active** ให้อัตโนมัติ
+ทันที — ถ้ามี config อื่น Active อยู่ก่อนแล้ว ระบบจะปิด Active ของ config เดิม
+ให้อัตโนมัติด้วย (แค่ปิด Active เท่านั้น ข้อมูล/ประวัติของชุดเดิมยังเก็บไว้
+ครบ ไม่ได้ลบทิ้ง) ถ้าต้องการปิด Active ของชุดนี้ภายหลัง ให้กดปุ่ม **🔓 ปิด
+Active** (มี popup ยืนยันก่อนเสมอ กันกดพลาด)
 
 ### 4.4 Sync ข้อมูล (UC-05)
 - อัตโนมัติทุก 5 นาที (Cron) — ไม่ต้องทำอะไร
@@ -108,9 +124,12 @@ Cron รายเดือนลบ Trip Log (+ Event ที่ผูกอย�
 
 | ความเสี่ยง | รายละเอียด |
 |---|---|
-| JWT Authentication schema | ยังเป็นการเดา schema ของ `POST /auth/login` ต้องยืนยันกับทีม Backend โดยตรง |
 | Test Coverage เป็นตัวเลข % | มี unit test ครอบคลุมทุก UC หลักแล้วเชิงคุณภาพ แต่ยังไม่มีเครื่องมือวัดเป็น % จริง |
-| FDD เวอร์ชันในเอกสาร | ตัวเอกสาร FDD ต้นทางบางฉบับยังอ้างอิง Odoo 17 ทั้งที่โค้ดจริงคือ Odoo 19 |
+| Unique Constraint ของ Incentive | เปลี่ยนจาก `driver_id + period_month + period_year` (ตาม FDD เดิม) เป็น `driver_id + date_from + date_to` เพื่อรองรับรอบตัดวิก — ยังไม่ได้รับการยืนยันจาก Supervisor ว่าให้ใช้ต่อหรือย้อนกลับ |
+
+**ปิดแล้ว:** เอกสาร FDD เคยเขียนอ้างอิง Odoo 17 ไม่ตรงกับโค้ดจริง (Odoo 19)
+— บริษัทอนุมัติให้ใช้ Odoo 19 อย่างเป็นทางการแล้ว ไม่ถือเป็นความเสี่ยงอีกต่อไป
+(ยังต้องอัปเดตตัวเอกสาร FDD เป็น v2.0 ให้ตรงในภายหลัง แต่ไม่ใช่ blocker)
 
 ## 7. โครงสร้างโมดูล
 
@@ -123,7 +142,7 @@ fleet_telematics_integration/
 ├── security/         # Access rights, groups, record rules
 ├── data/             # Cron jobs (sync ทุก 5 นาที, incentive รายเดือน, data retention รายเดือน)
 ├── reports/          # QWeb PDF reports
-└── tests/            # Unit tests (100 tests ครอบคลุม UC-01, 02, 04, 10, 11, 12,
+└── tests/            # Unit tests (107 tests ครอบคลุม UC-01, 02, 04, 10, 11, 12,
                        # Maintenance Triggers, Event Lockdown, Trip Wizard,
                        # Vehicle Stats, Data Retention)
 ```

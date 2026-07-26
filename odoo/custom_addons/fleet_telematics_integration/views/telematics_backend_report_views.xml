@@ -6,54 +6,123 @@
         <field name="model">fleet.telematics.backend.report</field>
         <field name="arch" type="xml">
             <form string="Backend Reports (ข้อมูลสด)">
+                <sheet>
 
-                <!-- Driver selector -->
-                <group>
-                    <field name="driver_id"
-                           help="เลือก Driver สำหรับรายงานรายคน — เว้นว่างสำหรับรายงานทั้งฟลีท"/>
-                </group>
+                    <!-- ── หัวข้อหน้า ─────────────────────────────────── -->
+                    <div class="d-flex align-items-center mb-3">
+                        <i class="fa fa-bar-chart fa-2x text-primary me-3"/>
+                        <div>
+                            <h2 class="mb-0">Fleet Telematics Reports</h2>
+                            <span class="text-muted">
+                                ดึงรายงานสดจาก Backend โดยตรง ไม่คำนวณซ้ำฝั่ง Odoo
+                                — กดปุ่มด้านล่างเพื่อดึงข้อมูลล่าสุด
+                            </span>
+                        </div>
+                    </div>
 
-                <!-- กลุ่ม 1: ทั้งฟลีท -->
-                <div class="alert alert-info py-2 px-3 mb-1" role="alert">
-                    <b>📊 รายงานภาพรวม Fleet</b> — ไม่ต้องเลือก Driver
-                </div>
-                <div class="row mb-3 px-3 gap-2">
-                    <button name="action_fetch_fleet_summary"
-                            string="Fleet Summary (ภาพรวม Fleet)"
-                            type="object" class="btn btn-primary col-auto"/>
-                    <button name="action_fetch_all_driver_scores"
-                            string="Driver Score (ทุกคน)"
-                            type="object" class="btn btn-secondary col-auto"/>
-                    <button name="action_fetch_maintenance_forecast"
-                            string="Maintenance Forecast (ซ่อมบำรุง)"
-                            type="object" class="btn btn-warning col-auto"/>
-                    <button name="action_fetch_fuel_efficiency"
-                            string="Fuel Efficiency (ทั้งฟลีท)"
-                            type="object" class="btn btn-secondary col-auto"/>
-                </div>
+                    <!-- ── เลือก Driver (ใช้ร่วมกับกลุ่มรายงานรายคนด้านล่าง) ── -->
+                    <div class="card mb-3">
+                        <div class="card-body py-3">
+                            <div class="d-flex align-items-center gap-3 flex-wrap">
+                                <i class="fa fa-user-circle fa-lg text-secondary"/>
+                                <field name="driver_id" placeholder="เลือก Driver..."
+                                       class="oe_inline"
+                                       style="min-width: 280px;"
+                                       help="เลือก Driver สำหรับรายงานรายคน — เว้นว่างสำหรับรายงานทั้งฟลีท"/>
+                                <span class="badge rounded-pill text-bg-success" invisible="not driver_id">
+                                    <i class="fa fa-check"/> พร้อมดึงรายงานรายคนแล้ว
+                                </span>
+                                <span class="badge rounded-pill text-bg-light text-muted border" invisible="driver_id">
+                                    ยังไม่ได้เลือก Driver — ใช้ได้เฉพาะรายงานภาพรวม Fleet ด้านล่าง
+                                </span>
+                            </div>
+                        </div>
+                    </div>
 
-                <!-- กลุ่ม 2: รายคน -->
-                <div class="alert alert-secondary py-2 px-3 mb-1" role="alert">
-                    <b>👤 รายงานรายคน</b> — ต้องเลือก Driver ก่อนกด
-                </div>
-                <div class="row mb-3 px-3 gap-2">
-                    <button name="action_fetch_driver_score_single"
-                            string="Driver Score (รายคน)"
-                            type="object" class="btn btn-secondary col-auto"/>
-                    <button name="action_fetch_driver_events"
-                            string="Harsh Events (รายคน)"
-                            type="object" class="btn btn-secondary col-auto"/>
-                    <button name="action_fetch_fuel_summary"
-                            string="Fuel Summary (รายคน)"
-                            type="object" class="btn btn-secondary col-auto"/>
-                </div>
+                    <!-- ── กลุ่ม 1: รายงานภาพรวม Fleet ──────────────────── -->
+                    <div class="card mb-3 border-start border-primary border-4">
+                        <div class="card-body">
+                            <h5 class="d-flex align-items-center gap-2 mb-1">
+                                <i class="fa fa-truck text-primary"/>
+                                รายงานภาพรวม Fleet
+                            </h5>
+                            <p class="text-muted mb-3">
+                                ดูภาพรวมทั้งฟลีทพร้อมกัน — ไม่ต้องเลือก Driver
+                            </p>
+                            <div class="d-flex flex-wrap gap-2">
+                                <button name="action_fetch_fleet_summary"
+                                        type="object" class="btn btn-primary">
+                                    <i class="fa fa-th-large me-1"/> Fleet Summary
+                                    <span class="d-block small fw-normal opacity-75">ภาพรวม Fleet รายวัน</span>
+                                </button>
+                                <button name="action_fetch_all_driver_scores"
+                                        type="object" class="btn btn-outline-primary">
+                                    <i class="fa fa-list-ol me-1"/> Driver Score
+                                    <span class="d-block small fw-normal opacity-75">คะแนนขับขี่ทุกคน</span>
+                                </button>
+                                <button name="action_fetch_maintenance_forecast"
+                                        type="object" class="btn btn-outline-warning">
+                                    <i class="fa fa-wrench me-1"/> Maintenance Forecast
+                                    <span class="d-block small fw-normal opacity-75">พยากรณ์ซ่อมบำรุง</span>
+                                </button>
+                                <button name="action_fetch_fuel_efficiency"
+                                        type="object" class="btn btn-outline-primary">
+                                    <i class="fa fa-tint me-1"/> Fuel Efficiency
+                                    <span class="d-block small fw-normal opacity-75">ประสิทธิภาพน้ำมันทั้งฟลีท</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
 
-                <!-- ผลลัพธ์ -->
-                <field name="result_html" widget="html"
-                       invisible="not result_html"/>
+                    <!-- ── กลุ่ม 2: รายงานรายคน ──────────────────────────── -->
+                    <div class="card mb-3 border-start border-secondary border-4">
+                        <div class="card-body">
+                            <h5 class="d-flex align-items-center gap-2 mb-1">
+                                <i class="fa fa-user text-secondary"/>
+                                รายงานรายคน
+                            </h5>
+                            <p class="text-muted mb-3">
+                                ต้องเลือก Driver ที่ช่องด้านบนก่อนถึงจะกดปุ่มด้านล่างได้
+                            </p>
+                            <div class="d-flex flex-wrap gap-2">
+                                <button name="action_fetch_driver_score_single"
+                                        type="object" class="btn btn-outline-secondary">
+                                    <i class="fa fa-star me-1"/> Driver Score
+                                    <span class="d-block small fw-normal opacity-75">คะแนนของคนนี้</span>
+                                </button>
+                                <button name="action_fetch_driver_events"
+                                        type="object" class="btn btn-outline-secondary">
+                                    <i class="fa fa-exclamation-triangle me-1"/> Harsh Events
+                                    <span class="d-block small fw-normal opacity-75">ประวัติพฤติกรรมเสี่ยง</span>
+                                </button>
+                                <button name="action_fetch_fuel_summary"
+                                        type="object" class="btn btn-outline-secondary">
+                                    <i class="fa fa-tint me-1"/> Fuel Summary
+                                    <span class="d-block small fw-normal opacity-75">สรุปการใช้น้ำมันของคนนี้</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
 
+                    <!-- ── ผลลัพธ์ ───────────────────────────────────────── -->
+                    <div invisible="not result_html">
+                        <hr class="my-4"/>
+                        <h5 class="d-flex align-items-center gap-2 mb-3">
+                            <i class="fa fa-table text-success"/>
+                            ผลลัพธ์ล่าสุด
+                        </h5>
+                        <div class="card">
+                            <div class="card-body">
+                                <field name="result_html" widget="html" nolabel="1"/>
+                            </div>
+                        </div>
+                    </div>
+
+                </sheet>
                 <footer>
-                    <button string="ย้อนกลับ" class="btn btn-secondary" special="cancel"/>
+                    <button string="ย้อนกลับ" class="btn btn-secondary" special="cancel">
+                        <i class="fa fa-arrow-left me-1"/> ย้อนกลับ
+                    </button>
                 </footer>
             </form>
         </field>

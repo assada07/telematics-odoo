@@ -24,9 +24,15 @@ class TelematicsScoringConfig(models.Model):
     _order       = 'effective_date desc'
 
     name           = fields.Char(string='Config Name', required=True)
-    active         = fields.Boolean(string='Active', default=False,
+    is_active      = fields.Boolean(string='Active', default=False,
         help='Active ได้เพียง 1 config เท่านั้น — ตอนสร้างใหม่ต้องปิดไว้ก่อน '
-             'เพื่อให้กรอกข้อมูลและทดสอบ Push ได้ก่อนเปิดใช้งานจริง')
+             'เพื่อให้กรอกข้อมูลและทดสอบ Push ได้ก่อนเปิดใช้งานจริง\n\n'
+             'หมายเหตุทางเทคนิค: ตั้งชื่อฟิลด์เป็น is_active (ไม่ใช่ active '
+             'เฉยๆ) เพราะ Odoo สงวนชื่อฟิลด์ "active" ไว้เป็นกลไก archive '
+             'พิเศษ — ถ้าใช้ชื่อ active ตรงๆ พอ Config ถูกปิด (False) Odoo '
+             'จะซ่อน record นั้นออกจาก List View/หน้าฟอร์มโดยอัตโนมัติทันที '
+             '(เหมือนถูกลบ ทั้งที่ข้อมูลยังอยู่ในฐานข้อมูลจริง) แก้บั๊กนี้โดย '
+             'เปลี่ยนชื่อฟิลด์เป็น is_active แทน')
     effective_date = fields.Date(string='Effective Date', required=True)
 
     # ── คะแนนพื้นฐาน ────────────────────────────────────────────────────
@@ -69,10 +75,17 @@ class TelematicsScoringConfig(models.Model):
     tier_c_bonus_pct = fields.Float(string='Tier C — Bonus %',  default=0.0)
     # เพิ่มตาม FDD §12.3 — ตาราง Tier ระบุว่า Admin ปรับ Tier D ได้เหมือน
     # A/B/C ทุกประการ (เดิมโค้ด hardcode Tier D ไว้เป็น fallback ในลอจิก
-    # ไม่ใช่ field ที่ปรับได้จาก UI) — tier_d_min_score ปกติควรเป็น 0 เสมอ
-    # (นิยาม: คะแนนต่ำกว่า Tier C ทั้งหมดคือ D) แต่เก็บเป็น field ให้แก้ไขได้
-    # เพื่อความสอดคล้องกับสเปค ส่วน tier_d_bonus_pct คือส่วนที่มีความหมาย
-    # จริง (ปกติ 0% ตาม FDD แต่ Admin ปรับได้ถ้าต้องการ)
+    # ไม่ใช่ field ที่ปรับได้จาก UI)
+    #
+    # tier_d_min_score: ปกติควรเป็น 0 เสมอ (นิยาม: คะแนนต่ำกว่า Tier C
+    # ทั้งหมดคือ D อยู่แล้ว) เก็บเป็น field ให้แก้ไขได้เพื่อความสอดคล้องกับ
+    # สเปคเท่านั้น — ไม่มีจุดไหนในโค้ดเทียบค่านี้จริง
+    #
+    # tier_d_bonus_pct: มีผลจริงทั้ง 2 เส้นทาง — (1) ถูกส่งไป Backend ผ่าน
+    # _build_config_payload() ให้ Backend ใช้คำนวณเมื่อเชื่อมต่อสำเร็จ และ
+    # (2) ถูกอ่านโดย telematics_incentive.py: _local_tier_from_score()
+    # เป็น fallback ตอนเรียก Backend ไม่สำเร็จด้วย (ปกติตั้งเป็น 0% ตาม FDD
+    # แต่ Admin ปรับเป็นค่าอื่นได้ถ้าต้องการ)
     tier_d_min_score = fields.Float(string='Tier D — Min Score', default=0.0)
     tier_d_bonus_pct = fields.Float(string='Tier D — Bonus %',  default=0.0)
 
@@ -104,19 +117,19 @@ class TelematicsScoringConfig(models.Model):
         help='True เมื่อ Active=True เท่านั้น — ฟิลด์เกณฑ์ทั้งหมดจะแก้ไขไม่ได้ '
              'จนกว่าจะปิด Active (ตอน Active=False แก้ไข/Push ซ้ำได้เรื่อยๆ)')
 
-    @api.depends('active')
+    @api.depends('is_active')
     def _compute_is_locked(self):
         for rec in self:
-            rec.is_locked = bool(rec.active)
+            rec.is_locked = bool(rec.is_active)
 
     # ── ตรวจสอบความสมเหตุสมผลของค่าที่กรอก ──────────────────────────────
 
-    @api.constrains('active')
+    @api.constrains('is_active')
     def _check_single_active(self):
         """ห้ามมี Config ที่ Active=True พร้อมกันเกิน 1 ชุดในระบบ"""
         for rec in self:
-            if rec.active:
-                others = self.search([('active', '=', True), ('id', '!=', rec.id)])
+            if rec.is_active:
+                others = self.search([('is_active', '=', True), ('id', '!=', rec.id)])
                 if others:
                     raise ValidationError(
                         f'มี Scoring Config ที่ Active อยู่แล้ว: "{others[0].name}"\n'
@@ -222,7 +235,7 @@ class TelematicsScoringConfig(models.Model):
         touched = self._LOCKED_CONFIG_FIELDS.intersection(vals.keys())
         if touched:
             for rec in self:
-                if rec.active:
+                if rec.is_active:
                     raise UserError(
                         'Config นี้ Active อยู่ — แก้ไขเกณฑ์คะแนนไม่ได้ '
                         'เพื่อความโปร่งใสระหว่างรอบประเมิน\n\n'
@@ -230,22 +243,66 @@ class TelematicsScoringConfig(models.Model):
                     )
         return super().write(vals)
 
+    def action_deactivate(self):
+        """ปิด Active ของ config ชุดนี้ — แค่ปลดล็อกให้แก้ไขเกณฑ์คะแนนได้อีก
+        ครั้ง ข้อมูลทั้งหมด (รวมถึงผู้อนุมัติ/วันที่อนุมัติ) ยังเก็บไว้ครบ
+        ไม่ได้ล้างหรือลบทิ้ง — popup ยืนยันก่อนกดอยู่ที่ปุ่มในฟอร์ม (ดู
+        views/telematics_scoring_views.xml, attribute confirm=)"""
+        self.ensure_one()
+        self.write({'is_active': False})
+        return {
+            'type': 'ir.actions.client',
+            'tag':  'display_notification',
+            'params': {
+                'title':   '🔓 ปิด Active แล้ว',
+                'message': f'Config "{self.name}" ปิด Active แล้ว — แก้ไขเกณฑ์คะแนนได้อีกครั้ง (ข้อมูลเดิมยังเก็บไว้ครบ)',
+                'type':    'success',
+                # แก้บั๊ก 2026-07-24: display_notification เฉยๆ ไม่ทำให้ฟอร์ม
+                # รีเฟรชค่าฟิลด์ให้อัตโนมัติ (ต้องกดรีเฟรชเองค่าถึงจะขึ้น) —
+                # เพิ่ม next: soft_reload ให้รีโหลดฟอร์มปัจจุบันทันทีหลังขึ้น
+                # แจ้งเตือน โดยไม่ต้อง refresh หน้าเบราว์เซอร์เอง
+                'next': {'type': 'ir.actions.client', 'tag': 'soft_reload'},
+            },
+        }
+
     def action_approve(self):
-        """อนุมัติเกณฑ์คะแนนชุดนี้ — เฉพาะกลุ่ม Fleet Manager กดได้"""
+        """อนุมัติเกณฑ์คะแนนชุดนี้ — เฉพาะกลุ่ม Fleet Manager กดได้
+        กด Approve แล้วระบบจะติ๊ก Active ให้อัตโนมัติทันที ถ้ามี config อื่นที่
+        Active อยู่ก่อนแล้ว ระบบจะปิด Active ของชุดเดิมให้อัตโนมัติเช่นกัน
+        (แค่ปิด Active เท่านั้น — ข้อมูล/ประวัติของ config ชุดเดิมยังเก็บไว้
+        ครบ ไม่ได้ลบทิ้ง ดูย้อนหลังได้ตามปกติ)"""
         self.ensure_one()
         if not self.env.user.has_group('fleet.fleet_group_manager'):
             raise UserError('เฉพาะ Fleet Manager เท่านั้นที่มีสิทธิ์อนุมัติ Scoring Config')
+
+        others = self.search([('is_active', '=', True), ('id', '!=', self.id)])
+        deactivated_name = others[0].name if others else None
+        if others:
+            others.write({'is_active': False})
+
         self.write({
             'approved_by_id': self.env.user.id,
             'approved_at':    fields.Datetime.now(),
+            'is_active':      True,
         })
+
+        msg = f'{self.env.user.name} อนุมัติ Config "{self.name}" แล้ว และเปิด Active ให้อัตโนมัติ'
+        if deactivated_name:
+            msg += f'\nปิด Active ของ Config เดิม "{deactivated_name}" ให้อัตโนมัติ (ข้อมูลยังเก็บไว้ครบ ไม่ได้ลบ)'
+
         return {
             'type': 'ir.actions.client',
             'tag':  'display_notification',
             'params': {
                 'title':   '✅ อนุมัติแล้ว',
-                'message': f'{self.env.user.name} อนุมัติ Config "{self.name}" แล้ว',
+                'message': msg,
                 'type':    'success',
+                'sticky':  bool(deactivated_name),
+                # แก้บั๊ก 2026-07-24: เดิมกด Approve แล้วช่อง Active/ผู้อนุมัติ
+                # บนฟอร์มไม่อัปเดตให้เห็นทันที (ต้องออกไปแล้วกลับเข้ามาใหม่ถึง
+                # จะเห็นค่าที่ถูกต้อง) เพิ่ม next: soft_reload ให้รีโหลดฟอร์ม
+                # ปัจจุบันทันทีหลังขึ้นแจ้งเตือน เห็นสวิตช์ Active เขียวทันที
+                'next': {'type': 'ir.actions.client', 'tag': 'soft_reload'},
             },
         }
 
@@ -294,7 +351,7 @@ class TelematicsScoringConfig(models.Model):
             'tier_d_min_score':    self.tier_d_min_score,
             'tier_d_bonus_pct':    self.tier_d_bonus_pct,
             'max_deduct_per_trip': self.max_deduct_per_trip,
-            'is_active':           self.active,
+            'is_active':           self.is_active,
             'synced_from_odoo_at': (
                 self.effective_date.isoformat() if self.effective_date else None
             ),
@@ -313,12 +370,19 @@ class TelematicsScoringConfig(models.Model):
         endpoint = f'{base_url}/api/v1/config/scoring'
         payload  = self._build_config_payload()
 
+        # แก้บั๊ก 2026-07-24: เดิมไม่ได้ส่ง APIKEY header ไปด้วย ทำให้ Backend
+        # ตอบ 403 Forbidden กลับมาเสมอ — โมเดลอื่นทุกตัวในระบบส่ง header นี้
+        # ผ่าน fleet.telematics.config.get_active_api_key() หมดแล้ว จุดนี้จุด
+        # เดียวที่ตกหล่นไป
+        Config  = self.env['fleet.telematics.config']
+        api_key = Config.get_active_api_key()
+
         _logger.info('action_push_to_backend: POST %s | config_name=%s', endpoint, self.name)
 
         try:
             resp = requests.post(
                 endpoint,
-                headers={'Content-Type': 'application/json'},
+                headers={'APIKEY': api_key, 'Content-Type': 'application/json'},
                 json=payload,
                 timeout=15,
             )
@@ -343,6 +407,9 @@ class TelematicsScoringConfig(models.Model):
                     'message': msg,
                     'type':    'success',
                     'sticky':  False,
+                    # แก้บั๊กเดียวกับ Approve/ปิด Active — ให้ Last Pushed At /
+                    # Push Status อัปเดตให้เห็นทันทีไม่ต้องรีเฟรชเอง
+                    'next': {'type': 'ir.actions.client', 'tag': 'soft_reload'},
                 },
             }
         except requests.RequestException as e:
@@ -399,77 +466,13 @@ class TelematicsScoringConfig(models.Model):
             },
         }
 
-    def action_fetch_current_config(self):
-        """ดึงเกณฑ์คะแนนที่ Backend ใช้งานอยู่จริงตอนนี้ (GET /api/v1/config/
-        scoring/current) มาแสดงเทียบกับที่ตั้งไว้ใน Odoo ผ่าน popup"""
-        self.ensure_one()
-        base_url = self._get_base_url()
-        url      = f'{base_url}/api/v1/config/scoring/current'
-
-        _logger.info('action_fetch_current_config: GET %s', url)
-
-        try:
-            resp = requests.get(
-                url,
-                headers={'accept': 'application/json'},
-                timeout=15,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except requests.ConnectionError:
-            raise UserError(
-                f'เชื่อมต่อ Backend ไม่ได้: {url}\n'
-                'เช็คว่า Backend รันอยู่และ IP/Port ถูกต้อง'
-            )
-        except requests.RequestException as e:
-            raise UserError(f'ดึง Config จาก Backend ไม่สำเร็จ:\n{e}')
-
-        config_name  = data.get('config_name',  'N/A')
-        score_base   = data.get('score_base',   'N/A')
-        is_active    = '✅ Active' if data.get('is_active') else '❌ Inactive'
-        eff_date     = data.get('effective_date', 'N/A')
-
-        lines = [
-            f"Config: {config_name}  |  {is_active}  |  Effective: {eff_date}",
-            f"Base Score: {score_base}  |  Max Deduct/Trip: {data.get('max_deduct_per_trip','N/A')}",
-            "",
-            "— Deduction Weights —",
-            f"Harsh Brake: {data.get('harsh_brake_deduct','N/A')}  "
-            f"Accel: {data.get('harsh_accel_deduct','N/A')}  "
-            f"Corner: {data.get('harsh_corner_deduct','N/A')}",
-            f"Speeding: {data.get('speeding_deduct','N/A')}  "
-            f"Idling: {data.get('idling_deduct','N/A')}  "
-            f"Bump: {data.get('bump_deduct','N/A')}",
-            "",
-            "— Thresholds —",
-            f"Brake G: {data.get('harsh_brake_g','N/A')}  "
-            f"Accel G: {data.get('harsh_accel_g','N/A')}  "
-            f"Corner G: {data.get('harsh_corner_g','N/A')}",
-            f"Speeding over: {data.get('speeding_kmh_over','N/A')} km/h  "
-            f"Idle: {data.get('idle_min_threshold','N/A')} min",
-            f"Speed Limit — กรุงเทพฯ: {data.get('speed_limit_bkk','N/A')} km/h  "
-            f"นอกเมือง: {data.get('speed_limit_upcountry','N/A')} km/h",
-        ]
-        msg = '\n'.join(lines)
-
-        return {
-            'type': 'ir.actions.client',
-            'tag':  'display_notification',
-            'params': {
-                'title':   f'🔄 Config บน Backend: {config_name}',
-                'message': msg,
-                'type':    'info',
-                'sticky':  True,
-            },
-        }
-
     @api.model
     def _track_usage(self, count=1):
         """อัปเดต History fields (last_used_date, total_trips_calculated)
         ของ config ที่ Active อยู่ตอนนี้ — เรียกจาก models/telematics_log.py
         ทุกครั้งที่มี Trip ใหม่ sync เข้ามา (Backend คำนวณคะแนนด้วย config
         ที่ Active อยู่ ณ ขณะนั้นเสมอ ตาม FDD §12.5)"""
-        active_cfg = self.search([('active', '=', True)], limit=1)
+        active_cfg = self.search([('is_active', '=', True)], limit=1)
         if active_cfg:
             active_cfg.write({
                 'last_used_date':          fields.Datetime.now(),
