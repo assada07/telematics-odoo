@@ -1,0 +1,213 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  views/telematics_scoring_views.xml
+  หน้าจอตั้งเกณฑ์พารามิเตอร์ตัดแต้ม (Scoring Config)
+  ปุ่มด้านบน มี 2 สถานะ:
+    - Active=False: [ ⚡ Test Connection ] → [ ✅ Approve ] → [ 💾 Push Config ]
+      (แสดงพร้อมกันเสมอ 3 ปุ่ม — Approve กดซ้ำได้ทุกครั้งที่ยังไม่ Active
+      แม้เคย Approve ไปแล้วก่อนหน้า เพื่อ "เปิดใช้งานอีกครั้ง" config ชุดเดิม
+      ได้ง่ายๆ โดยไม่ต้องสร้างใหม่)
+    - Active=True: เหลือแค่ [ 🔓 ปิด Active ] ปุ่มเดียว (ฟอร์มถูกล็อกแก้ไข
+      ไม่ได้อยู่แล้ว จึงไม่ต้องมี Test Connection/Push Config ให้กด)
+  ฟิลด์เก็บสถานะเปิด/ปิดของ config ชื่อ is_active (ไม่ใช่ active เฉยๆ) เพราะ
+  Odoo สงวนชื่อฟิลด์ "active" ไว้เป็นกลไก archive พิเศษ — ถ้าใช้ active ตรงๆ
+  พอปิด (False) Odoo จะซ่อน record ออกจาก List/Form ให้อัตโนมัติทันที (ดู
+  เหมือนถูกลบทั้งที่ข้อมูลยังอยู่ในฐานข้อมูลจริง) แก้บั๊กนี้แล้วด้วยการเปลี่ยน
+  ชื่อฟิลด์เป็น is_active แทน — ฟิลด์นี้ล็อก readonly ไว้ทั้งใน list/form
+  กันกดพลาดโดยไม่ผ่าน popup ยืนยัน
+  System Health Dashboard ย้ายขึ้นบนสุด
+-->
+<odoo>
+
+    <!-- ── List View ─────────────────────────────────────────────────── -->
+    <record id="view_telematics_scoring_list" model="ir.ui.view">
+        <field name="name">fleet.telematics.scoring.config.list</field>
+        <field name="model">fleet.telematics.scoring.config</field>
+        <field name="arch" type="xml">
+            <list decoration-success="is_active == True">
+                <field name="name"/>
+                <field name="effective_date"/>
+                <field name="score_base"/>
+                <field name="tier_a_min_score"/>
+                <field name="tier_b_min_score"/>
+                <field name="tier_c_min_score"/>
+                <field name="last_push_at"/>
+                <field name="last_push_status"/>
+                <field name="approved_by_id" optional="show"/>
+                <field name="is_active" widget="boolean_toggle" readonly="1" string="Active"/>
+            </list>
+        </field>
+    </record>
+
+    <!-- ── Form View ─────────────────────────────────────────────────── -->
+    <record id="view_telematics_scoring_form" model="ir.ui.view">
+        <field name="name">fleet.telematics.scoring.config.form</field>
+        <field name="model">fleet.telematics.scoring.config</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <!-- ขั้นตอนใช้งาน 3 ปุ่มเรียงตามลำดับ (ตอนยังไม่ Active):
+                         1) Test Connection 2) Approve 3) Push Config
+                         พอ Active=True แล้ว 3 ปุ่มนี้จะซ่อนหมด เหลือแต่ปุ่ม
+                         "🔓 ปิด Active" ปุ่มเดียว เพราะตอน Active แก้ไข/ทดสอบ/
+                         push อะไรไม่ได้อยู่แล้ว (ฟอร์มถูกล็อก) การเดียวที่ทำ
+                         ได้คือปิด Active ก่อนเท่านั้น -->
+
+                    <!-- 1) ปุ่ม Test Connection → ซ่อนตอน Active -->
+                    <button name="action_test_connection"
+                            string="⚡ Test Connection"
+                            type="object"
+                            class="btn-secondary"
+                            invisible="is_active"/>
+                    <!-- 2) ปุ่ม Approve → เฉพาะ Fleet Manager, แสดงเฉพาะตอน "Saved"
+                         (มี id แล้ว) และยังไม่ Active — ไม่ผูกกับ approved_by_id
+                         อีกต่อไป (เดิมพอเคย Approve ครั้งแรกไปแล้ว ปุ่มนี้จะ
+                         หายถาวร ต่อให้ปิด Active แล้วอยากกลับมาใช้ config ชุด
+                         เดิมอีกครั้งก็กดไม่ได้ ต้องแก้ค่าแล้วสร้างใหม่เท่านั้น
+                         — แก้แล้วให้กด Approve ซ้ำได้ทุกครั้งที่ยังไม่ Active
+                         เพื่อ "เปิดใช้งานอีกครั้ง" config ชุดเดิมได้ง่ายๆ) -->
+                    <button name="action_approve"
+                            string="✅ Approve"
+                            type="object"
+                            class="btn-primary"
+                            groups="fleet.fleet_group_manager"
+                            invisible="not id or is_active"
+                            confirm="ยืนยันอนุมัติเกณฑ์คะแนนชุดนี้? หลังอนุมัติจะ Push ไป Backend ได้"/>
+                    <!-- 3) ปุ่ม Push Config → ซ่อนตอน Active -->
+                    <button name="action_push_to_backend"
+                            string="💾 Push Config"
+                            type="object"
+                            class="btn-primary"
+                            invisible="is_active"
+                            confirm="ยืนยันส่ง Scoring Config นี้ไปให้ backend ประมวลผลทันที?"/>
+                    <!-- ปุ่ม ปิด Active → แสดงเฉพาะตอน Active=True เท่านั้น
+                         ต้องกดผ่านปุ่มนี้เท่านั้น (ฟิลด์ is_active เองถูกล็อก
+                         ไว้ทั้งใน list/form) เพื่อบังคับให้ขึ้น popup ยืนยัน
+                         ก่อนทุกครั้ง กันกดพลาด — ข้อมูลเดิมยังเก็บไว้ครบไม่ลบทิ้ง -->
+                    <button name="action_deactivate"
+                            string="🔓 ปิด Active"
+                            type="object"
+                            class="btn-secondary"
+                            invisible="not is_active"
+                            confirm="ยืนยันปิด Active ของ Config นี้? ข้อมูล/ผู้อนุมัติจะยังเก็บไว้ครบ แค่ปลดล็อกให้แก้ไขเกณฑ์คะแนนได้อีกครั้ง"/>
+                </header>
+                <sheet>
+                    <!-- Ribbon "Active" แสดงตรงมุมบนขวาเมื่อ is_active=True -->
+                    <widget name="web_ribbon" title="Active" bg_color="bg-success"
+                            invisible="not is_active"/>
+
+                    <div class="alert alert-warning" role="alert" invisible="not is_locked">
+                        🔒 Config นี้ Active อยู่ — แก้ไขเกณฑ์คะแนนไม่ได้
+                        ปิด Active ก่อนถ้าต้องการแก้ไข
+                    </div>
+
+                    <!-- System Health Dashboard (ย้ายขึ้นบนสุด) -->
+                    <group string="🔌 System Health">
+                        <group>
+                            <field name="last_push_at"     readonly="1" string="Last Pushed At"/>
+                            <field name="last_push_status" readonly="1" string="Push Status"/>
+                        </group>
+                        <group>
+                            <field name="approved_by_id" readonly="1" string="ผู้อนุมัติ"/>
+                            <field name="approved_at"    readonly="1" string="วันที่อนุมัติ"/>
+                        </group>
+                    </group>
+
+                    <!-- History — track ว่า config นี้ถูกใช้กับกี่ trip แล้ว -->
+                    <group string="📊 History">
+                        <group>
+                            <field name="created_date" readonly="1"/>
+                            <field name="last_used_date" readonly="1"/>
+                        </group>
+                        <group>
+                            <field name="total_trips_calculated" readonly="1"/>
+                        </group>
+                    </group>
+
+                    <!-- ข้อมูลทั่วไป -->
+                    <group string="ข้อมูลทั่วไป">
+                        <group>
+                            <field name="name" readonly="is_locked"/>
+                            <field name="effective_date" readonly="is_locked"/>
+                            <field name="is_active" readonly="1" string="Active" widget="boolean_toggle"/>
+                        </group>
+                        <group>
+                            <field name="score_base" readonly="is_locked"/>
+                            <field name="max_deduct_per_trip" readonly="is_locked"/>
+                        </group>
+                    </group>
+
+                    <notebook>
+                        <!-- Tab 1: Detection Thresholds -->
+                        <page string="Detection Thresholds" name="thresholds">
+                            <group>
+                                <group string="G-Force (ค่าแรง G ที่ถือว่าผิดปกติ)">
+                                    <field name="harsh_brake_g" readonly="is_locked"/>
+                                    <field name="harsh_accel_g" readonly="is_locked"/>
+                                    <field name="harsh_corner_g" readonly="is_locked"/>
+                                </group>
+                                <group string="Speed &amp; Idle">
+                                    <field name="speeding_kmh_over" readonly="is_locked"/>
+                                    <field name="idle_min_threshold" readonly="is_locked"/>
+                                    <!-- ความเร็วจำกัดแยกโซน กทม./นอกเมือง -->
+                                    <field name="speed_limit_bkk" readonly="is_locked"/>
+                                    <field name="speed_limit_upcountry" readonly="is_locked"/>
+                                </group>
+                            </group>
+                        </page>
+
+                        <!-- Tab 2: Deduction Weights -->
+                        <page string="Deduction Weights" name="weights">
+                            <group>
+                                <field name="harsh_brake_deduct" readonly="is_locked"/>
+                                <field name="harsh_accel_deduct" readonly="is_locked"/>
+                                <field name="harsh_corner_deduct" readonly="is_locked"/>
+                                <field name="speeding_deduct" readonly="is_locked"/>
+                                <field name="idling_deduct" readonly="is_locked"/>
+                                <field name="bump_deduct" readonly="is_locked"/>
+                            </group>
+                        </page>
+
+                        <!-- Tab 3: Incentive Tiers -->
+                        <page string="Incentive Tiers" name="tiers">
+                            <group>
+                                <group string="Tier A — Excellent">
+                                    <field name="tier_a_min_score" readonly="is_locked"/>
+                                    <field name="tier_a_bonus_pct" readonly="is_locked"/>
+                                </group>
+                                <group string="Tier B — Good">
+                                    <field name="tier_b_min_score" readonly="is_locked"/>
+                                    <field name="tier_b_bonus_pct" readonly="is_locked"/>
+                                </group>
+                            </group>
+                            <group>
+                                <group string="Tier C — Fair">
+                                    <field name="tier_c_min_score" readonly="is_locked"/>
+                                    <field name="tier_c_bonus_pct" readonly="is_locked"/>
+                                </group>
+                                <group string="Tier D — Needs Improvement">
+                                    <field name="tier_d_min_score" readonly="is_locked"/>
+                                    <field name="tier_d_bonus_pct" readonly="is_locked"/>
+                                    <span class="text-muted fst-italic">
+                                        ปกติ 0% ตามสเปค — คะแนนต่ำกว่า Tier C
+                                        ทั้งหมดถือเป็น Tier D เสมอ (min_score
+                                        เก็บไว้เพื่อความสอดคล้อง ไม่ได้ใช้
+                                        เทียบในการจัด tier จริง)
+                                    </span>
+                                </group>
+                            </group>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <!-- ── Action ─────────────────────────────────────────────────────── -->
+    <record id="action_telematics_scoring_config" model="ir.actions.act_window">
+        <field name="name">Scoring Config</field>
+        <field name="res_model">fleet.telematics.scoring.config</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+</odoo>

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  views/hr_employee_ext_views.xml
+  เพิ่มกล่องกรอกฐานเงินเดือนสำรอง (telematics_base_salary) ในฟอร์มพนักงาน
+  ใช้เฉพาะกรณีที่ระบบไม่มีข้อมูลสัญญาจ้าง (hr.version/hr.contract) ของ
+  พนักงานคนนั้น — ดู models/hr_employee_ext.py
+-->
+<odoo>
+
+    <record id="view_employee_form_telematics_inherit" model="ir.ui.view">
+        <field name="name">hr.employee.form.telematics.inherit</field>
+        <field name="model">hr.employee</field>
+        <field name="inherit_id" ref="hr.view_employee_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//sheet" position="inside">
+                <group string="🚗 Fleet Telematics — Bonus Calculation"
+                       name="telematics_bonus_group">
+                    <field name="telematics_base_salary"/>
+                    <div class="text-muted" colspan="2">
+                        ใช้คำนวณ Incentive/Bonus ของระบบ Fleet Telematics
+                        เท่านั้น — ระบบจะดึงเงินเดือนจากสัญญาจ้างพนักงาน
+                        (hr.version ใน Odoo 19 หรือ hr.contract ในเวอร์ชัน
+                        เก่ากว่า) เป็นหลักก่อนเสมอถ้ามีข้อมูลอยู่ ช่องนี้
+                        เป็นแค่ทางเลือกสำรองสำหรับกรณีที่ไม่มีข้อมูล
+                        สัญญาจ้างในระบบเลย
+                    </div>
+                </group>
+            </xpath>
+        </field>
+    </record>
+
+</odoo>
