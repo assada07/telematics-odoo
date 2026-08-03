@@ -16,6 +16,18 @@
                             string="💾 บันทึกและทดสอบการเชื่อมต่อ"
                             type="object"
                             class="btn-primary"/>
+                    <!-- เพิ่มปุ่มนี้ 2026-08-03: ใช้กด recompute Tier ของ
+                         Trip Log ทุกรายการใหม่ทั้งหมด — จำเป็นครั้งเดียวหลัง
+                         อัปเดตแก้บั๊ก "ไม่มี Config Active แล้วทุกทริปขึ้น
+                         Tier D หมด" (ทริปเก่าที่มี Tier ผิดค้างอยู่ไม่
+                         recompute ให้อัตโนมัติเพราะเป็น stored field) หรือใช้
+                         กดซ้ำได้ทุกครั้งที่เปลี่ยน Scoring Config ใหม่แล้ว
+                         อยากให้ Tier ของทริปเก่า sync ตาม threshold ใหม่ -->
+                    <button name="action_recompute_trip_tiers"
+                            string="🔄 Recompute Tier ของ Trip Log ทั้งหมด"
+                            type="object"
+                            class="btn-secondary"
+                            confirm="คำนวณ Tier ของ Trip Log ทุกรายการใหม่ทั้งหมด ตามเกณฑ์ของ Scoring Config ที่ Active อยู่ตอนนี้ — ดำเนินการต่อ?"/>
                 </header>
                 <sheet>
                     <div class="oe_title">

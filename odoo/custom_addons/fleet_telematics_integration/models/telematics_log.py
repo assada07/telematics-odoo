@@ -74,6 +74,45 @@ class TelematicsLog(models.Model):
     harsh_corner_count = fields.Integer(string='Harsh Cornering')
     speeding_count     = fields.Integer(string='Speeding Events')
 
+    # เพิ่มตาม FDD §12.6: Trip Log List ต้อง "กรองตามคนขับ/วันที่/คะแนน/tier"
+    # — เดิมไม่มี field tier ให้กรองเลย มีแค่ระดับ Incentive รายเดือนเท่านั้น
+    # ที่คำนวณ tier จำแนกทริปเดี่ยวๆ ตาม threshold ของ Scoring Config ที่
+    # Active อยู่ตอนนี้ (ใช้ logic เดียวกับ _local_tier_from_score() ใน
+    # telematics_incentive.py เพื่อให้ผลตรงกัน) — เป็น store=True เพื่อให้
+    # ใช้ filter/group by ในหน้า List ได้จริง
+    tier = fields.Selection([
+        ('A', 'A — Excellent'),
+        ('B', 'B — Good'),
+        ('C', 'C — Fair'),
+        ('D', 'D — Needs Improvement'),
+    ], string='Tier', compute='_compute_tier', store=True)
+
+    @api.depends('driver_score')
+    def _compute_tier(self):
+        """แก้บั๊ก 2026-08-03: เดิมถ้าไม่มี Scoring Config ที่ Active อยู่เลย
+        (cfg เป็น empty recordset) เงื่อนไข `cfg and score >= ...` จะเป็น
+        False ทุกเส้นเสมอ ตกไป else จนได้ Tier D หมดทุกทริป — ไม่ว่า
+        driver_score จะเป็น 90 หรือ 100 ก็ตาม (บั๊กเดียวกับที่เคยเจอใน
+        _local_tier_from_score() ของ telematics_incentive.py) ตอนนี้ถ้าไม่มี
+        config active ให้ fallback ไปใช้ threshold ค่าเริ่มต้นมาตรฐาน
+        (A=90/B=75/C=60 ตรงกับ default field ของ Scoring Config เอง) แทนที่
+        จะบังคับเป็น D เสมอ"""
+        Config = self.env['fleet.telematics.scoring.config']
+        cfg = Config.search([('is_active', '=', True)], limit=1)
+        tier_a_min = cfg.tier_a_min_score if cfg else 90.0
+        tier_b_min = cfg.tier_b_min_score if cfg else 75.0
+        tier_c_min = cfg.tier_c_min_score if cfg else 60.0
+        for rec in self:
+            score = rec.driver_score or 0.0
+            if score >= tier_a_min:
+                rec.tier = 'A'
+            elif score >= tier_b_min:
+                rec.tier = 'B'
+            elif score >= tier_c_min:
+                rec.tier = 'C'
+            else:
+                rec.tier = 'D'
+
     gps_track_json   = fields.Text(string='GPS Track (JSON)',
         help='เก็บ GPS track ทั้งสาย เช่น [{"lat": 18.7883, "lon": 98.9853, "ts": "..."}]')
     external_trip_id = fields.Char(

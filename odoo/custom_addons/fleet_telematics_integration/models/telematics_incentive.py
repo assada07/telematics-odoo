@@ -313,16 +313,26 @@ class TelematicsIncentive(models.Model):
 
     def _local_tier_from_score(self, return_pct=False):
         """คำนวณ Tier สำรองในเครื่องจาก threshold ของ Scoring Config —
-        ใช้เฉพาะตอนเรียก Backend ไม่สำเร็จเท่านั้น"""
+        ใช้เฉพาะตอนเรียก Backend ไม่สำเร็จเท่านั้น
+
+        แก้บั๊ก 2026-08-03: เดิมถ้าไม่มี Scoring Config ที่ Active อยู่เลย
+        (cfg เป็น empty recordset/falsy) เงื่อนไข `cfg and avg_score >= ...`
+        จะเป็น False ทุกเส้นเสมอ ตกไป else จนได้ Tier D เสมอไม่ว่า avg_score
+        จะสูงแค่ไหนก็ตาม — ตอนนี้ถ้าไม่มี config active ให้ fallback ไปใช้
+        threshold ค่าเริ่มต้นมาตรฐาน (A=90/B=75/C=60 ตรงกับ default field
+        ของ Scoring Config เอง) แทนที่จะบังคับเป็น D เสมอ"""
         self.ensure_one()
         cfg = self.scoring_config_id or self.env['fleet.telematics.scoring.config'].search(
             [('is_active', '=', True)], limit=1)
-        if cfg and self.avg_score >= cfg.tier_a_min_score:
-            tier, pct = 'A', cfg.tier_a_bonus_pct
-        elif cfg and self.avg_score >= cfg.tier_b_min_score:
-            tier, pct = 'B', cfg.tier_b_bonus_pct
-        elif cfg and self.avg_score >= cfg.tier_c_min_score:
-            tier, pct = 'C', cfg.tier_c_bonus_pct
+        tier_a_min = cfg.tier_a_min_score if cfg else 90.0
+        tier_b_min = cfg.tier_b_min_score if cfg else 75.0
+        tier_c_min = cfg.tier_c_min_score if cfg else 60.0
+        if self.avg_score >= tier_a_min:
+            tier, pct = 'A', (cfg.tier_a_bonus_pct if cfg else 10.0)
+        elif self.avg_score >= tier_b_min:
+            tier, pct = 'B', (cfg.tier_b_bonus_pct if cfg else 5.0)
+        elif self.avg_score >= tier_c_min:
+            tier, pct = 'C', (cfg.tier_c_bonus_pct if cfg else 0.0)
         else:
             # ใช้ tier_d_bonus_pct จาก config ถ้ามี (ให้ตรงกับที่ Admin ตั้งไว้
             # ในหน้าจอ) ไม่ hardcode 0.0 ตรงๆ — เผื่อ Admin ปรับ Tier D ให้

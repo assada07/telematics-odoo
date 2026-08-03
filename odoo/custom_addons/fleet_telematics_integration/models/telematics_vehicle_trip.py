@@ -72,7 +72,9 @@ class TelematicsVehicleTripHistory(models.TransientModel):
         """ดึงประวัติทริปของรถที่เลือก ตามช่วงวันที่/ตัวกรองที่ตั้งไว้ —
         เช็คก่อนว่ารถคันนี้มี GPS Device ผูกอยู่หรือยัง (ถ้าไม่มี Backend
         จะไม่มีทริปให้ดึงแน่นอน จึงเตือนตั้งแต่ต้นแทนที่จะปล่อยให้ผลลัพธ์
-        ว่างเปล่าแบบงงๆ)"""
+        ว่างเปล่าแบบงงๆ) — บังคับให้เลือกช่วงวันที่ (ตั้งแต่วันที่/ถึงวันที่)
+        ก่อนดึงข้อมูลเสมอ กันดึงข้อมูลทั้งหมดของรถคันนั้นแบบไม่จำกัดช่วง
+        (อาจช้าและข้อมูลเยอะเกินจำเป็น)"""
         self.ensure_one()
         if not self.vehicle_id:
             raise UserError('กรุณาเลือกรถก่อน (ค้นหาจากชื่อรถ/ทะเบียน/คนขับ)')
@@ -82,6 +84,14 @@ class TelematicsVehicleTripHistory(models.TransientModel):
                 f'รถ "{self.vehicle_id.display_name}" ยังไม่ได้ผูก GPS Device — '
                 'กรุณาลงทะเบียน Device ที่หน้ารถ (ปุ่ม Register Device) ก่อนดึงประวัติ'
             )
+
+        if not self.date_from or not self.date_to:
+            raise UserError(
+                'กรุณาเลือก "ช่วงวันที่ต้องการดูประวัติทริป" ให้ครบทั้ง '
+                '"ตั้งแต่วันที่" และ "ถึงวันที่" ก่อนกดดึงข้อมูล'
+            )
+        if self.date_from > self.date_to:
+            raise UserError('"ตั้งแต่วันที่" ต้องมาก่อนหรือเท่ากับ "ถึงวันที่"')
 
         if not self.id:
             self = self.create({
@@ -160,6 +170,11 @@ class TelematicsVehicleTripHistory(models.TransientModel):
         self.ensure_one()
         if not self.vehicle_id:
             raise UserError('กรุณาเลือกรถก่อน')
+        if not self.date_from or not self.date_to:
+            raise UserError(
+                'กรุณาเลือก "ช่วงวันที่ต้องการดูประวัติทริป" ให้ครบทั้ง '
+                '"ตั้งแต่วันที่" และ "ถึงวันที่" ก่อน Export'
+            )
 
         api_url, api_key = self._api()
 
@@ -233,10 +248,10 @@ class TelematicsVehicleTripHistory(models.TransientModel):
             ws.merge_range('A2:J2', period or 'ทุกช่วงเวลา', sub_fmt)
 
             # Header
-            headers = ['Trip ID', 'วันเริ่มต้น', 'วันสิ้นสุด', 'Driver ID',
+            headers = ['Trip ID', 'วันเริ่มต้น', 'วันสิ้นสุด', 'Driver',
                        'ระยะทาง (km)', 'คะแนน', 'เบรคกระชาก', 'เร่งกะทันหัน',
                        'ขับเร็วเกิน', 'Sync Odoo']
-            col_widths = [10, 20, 20, 12, 15, 10, 14, 16, 14, 12]
+            col_widths = [10, 20, 20, 18, 15, 10, 14, 16, 14, 12]
             for i, (h, w) in enumerate(zip(headers, col_widths)):
                 ws.write(3, i, h, hdr_fmt)
                 ws.set_column(i, i, w)
@@ -249,7 +264,7 @@ class TelematicsVehicleTripHistory(models.TransientModel):
                     t.get('id', ''),
                     (t.get('trip_start') or '')[:16].replace('T', ' '),
                     (t.get('trip_end')   or '')[:16].replace('T', ' '),
-                    t.get('driver_id', ''),
+                    self._driver_name(t.get('driver_id')),
                     round(t.get('distance_km', 0), 2),
                     round(score, 2) if isinstance(score, (int, float)) else '',
                     t.get('harsh_brake_count', 0),
@@ -285,7 +300,7 @@ class TelematicsVehicleTripHistory(models.TransientModel):
             import csv
             buf = io.StringIO()
             writer = csv.writer(buf)
-            writer.writerow(['Trip ID', 'วันเริ่มต้น', 'วันสิ้นสุด', 'Driver ID',
+            writer.writerow(['Trip ID', 'วันเริ่มต้น', 'วันสิ้นสุด', 'Driver',
                              'ระยะทาง (km)', 'คะแนน', 'เบรคกระชาก',
                              'เร่งกะทันหัน', 'ขับเร็วเกิน', 'Sync'])
             for t in trips:
@@ -293,7 +308,7 @@ class TelematicsVehicleTripHistory(models.TransientModel):
                     t.get('id', ''),
                     (t.get('trip_start') or '')[:16].replace('T', ' '),
                     (t.get('trip_end')   or '')[:16].replace('T', ' '),
-                    t.get('driver_id', ''),
+                    self._driver_name(t.get('driver_id')),
                     round(t.get('distance_km', 0), 2),
                     t.get('driver_score', ''),
                     t.get('harsh_brake_count', 0),
@@ -323,6 +338,21 @@ class TelematicsVehicleTripHistory(models.TransientModel):
             'target': 'new',
         }
 
+    def _driver_name(self, driver_id):
+        """Backend ส่ง driver_id กลับมาเป็นแค่เลข id (คือ res.partner id ใน
+        Odoo ตรงๆ ดู driver_backend_id ใน fleet_vehicle_ext.py) — ฟังก์ชันนี้
+        แปลงเลขนั้นกลับเป็นชื่อคนขับให้อ่านง่าย แทนที่จะโชว์ตัวเลขเปล่าๆ
+        เหมือนก่อนหน้านี้ (ผู้ใช้สับสนว่าทำไม Driver ID ไม่ตรงกับอะไรเลย)"""
+        if not driver_id:
+            return '-'
+        try:
+            partner = self.env['res.partner'].sudo().browse(int(driver_id))
+            if partner.exists():
+                return partner.name
+        except (ValueError, TypeError):
+            pass
+        return f'#{driver_id} (ไม่พบชื่อในระบบ)'
+
     def _render_trips(self, trips, total, total_pages):
         """แปลงรายการทริปที่ได้จาก Backend เป็นตาราง HTML แสดงในหน้าจอ
         ระบายสีคะแนนตามเกรด (เขียว/ฟ้า/เหลือง/แดง)"""
@@ -330,6 +360,7 @@ class TelematicsVehicleTripHistory(models.TransientModel):
             return '<p class="text-muted text-center py-4">ไม่พบข้อมูล Trip ในช่วงวันที่ที่เลือก</p>'
 
         rows = ''
+        synced_count = 0
         for t in trips:
             score = t.get('driver_score', '-')
             score_color = (
@@ -338,12 +369,20 @@ class TelematicsVehicleTripHistory(models.TransientModel):
                 '#d97706' if isinstance(score, (int, float)) and score >= 60 else
                 '#b91c1c'
             )
-            synced = '✅' if t.get('synced_to_odoo') else '⏳'
+            is_synced = bool(t.get('synced_to_odoo'))
+            if is_synced:
+                synced_count += 1
+            # แก้ตามที่ผู้ใช้ถาม 2026-08-03: เดิมโชว์แค่ ✅/⏳ เฉยๆ ดูไม่ออก
+            # ชัดๆ ว่าอันไหน sync แล้วหรือยัง — เปลี่ยนเป็นข้อความ+สีชัดเจน
+            synced = (
+                '<span style="color:#15803d;font-weight:bold">✅ Synced</span>' if is_synced
+                else '<span style="color:#b45309;font-weight:bold">⏳ ยังไม่ Sync</span>'
+            )
             rows += f'''<tr>
                 <td>{t.get("id", "-")}</td>
                 <td>{t.get("trip_start", "-")[:16].replace("T", " ") if t.get("trip_start") else "-"}</td>
                 <td>{t.get("trip_end", "-")[:16].replace("T", " ") if t.get("trip_end") else "-"}</td>
-                <td>{t.get("driver_id", "-")}</td>
+                <td>{self._driver_name(t.get("driver_id"))}</td>
                 <td>{round(t.get("distance_km", 0), 2)} km</td>
                 <td style="color:{score_color};font-weight:bold">{score}</td>
                 <td style="color:#ef4444">{t.get("harsh_brake_count", 0)}</td>
@@ -352,6 +391,8 @@ class TelematicsVehicleTripHistory(models.TransientModel):
                 <td>{synced}</td>
             </tr>'''
 
+        not_synced_count = len(trips) - synced_count
+
         return f'''
         <div>
             <p class="text-muted small mb-2">
@@ -359,19 +400,24 @@ class TelematicsVehicleTripHistory(models.TransientModel):
                 | รถ: <b>{self.vehicle_id.display_name}</b>
                 {f" | ทะเบียน: <b>{self.vehicle_id.license_plate}</b>" if self.vehicle_id.license_plate else ""}
             </p>
+            <p class="small mb-2">
+                ในหน้านี้: <span style="color:#15803d;font-weight:bold">✅ Sync เข้า Odoo แล้ว {synced_count} ทริป</span>
+                &nbsp;|&nbsp;
+                <span style="color:#b45309;font-weight:bold">⏳ ยังไม่ Sync {not_synced_count} ทริป</span>
+            </p>
             <table class="table table-bordered table-sm table-hover" style="font-size:13px">
                 <thead class="table-dark">
                     <tr>
                         <th>Trip ID</th>
                         <th>เริ่ม</th>
                         <th>สิ้นสุด</th>
-                        <th>Driver ID</th>
+                        <th>Driver</th>
                         <th>ระยะทาง</th>
                         <th>คะแนน</th>
                         <th>เบรคกระชาก</th>
                         <th>เร่งกะทันหัน</th>
                         <th>ขับเร็วเกิน</th>
-                        <th>Sync</th>
+                        <th>Sync Status</th>
                     </tr>
                 </thead>
                 <tbody>{rows}</tbody>

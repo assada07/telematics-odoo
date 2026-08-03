@@ -27,11 +27,18 @@
                 <filter name="today"
                         string="วันนี้"
                         domain="[('trip_start','&gt;=', context_today().strftime('%Y-%m-%d 00:00:00'))]"/>
+                <separator/>
+                <!-- เพิ่มตาม FDD §12.6: filter ตาม Tier (A/B/C/D) -->
+                <filter name="tier_a" string="Tier A — ดีเยี่ยม"     domain="[('tier','=','A')]"/>
+                <filter name="tier_b" string="Tier B — ดี"          domain="[('tier','=','B')]"/>
+                <filter name="tier_c" string="Tier C — พอใช้"       domain="[('tier','=','C')]"/>
+                <filter name="tier_d" string="Tier D — ต้องปรับปรุง" domain="[('tier','=','D')]"/>
                 <group>
                     <filter name="group_driver"  string="Driver"      context="{'group_by':'driver_id'}"/>
                     <filter name="group_vehicle" string="Vehicle"     context="{'group_by':'vehicle_id'}"/>
                     <filter name="group_month"   string="Month"       context="{'group_by':'trip_start:month'}"/>
                     <filter name="group_state"   string="Sync Status" context="{'group_by':'state'}"/>
+                    <filter name="group_tier"    string="Tier"        context="{'group_by':'tier'}"/>
                 </group>
             </search>
         </field>
@@ -70,6 +77,11 @@
                 <field name="harsh_corner_count" optional="hide"/>
                 <field name="speeding_count"    optional="show"/>
                 <field name="driver_score"      string="Driver Score"/>
+                <field name="tier"               widget="badge"
+                       decoration-success="tier=='A'"
+                       decoration-info="tier=='B'"
+                       decoration-warning="tier=='C'"
+                       decoration-danger="tier=='D'"/>
                 <field name="state"             widget="badge"/>
             </list>
         </field>
@@ -110,6 +122,11 @@
                     <group string="Driver Score &amp; Events">
                         <group>
                             <field name="driver_score"/>
+                            <field name="tier" widget="badge"
+                                   decoration-success="tier=='A'"
+                                   decoration-info="tier=='B'"
+                                   decoration-warning="tier=='C'"
+                                   decoration-danger="tier=='D'"/>
                             <field name="harsh_brake_count"  string="Harsh Brake"/>
                             <field name="harsh_accel_count"  string="Harsh Acceleration"/>
                         </group>

@@ -227,6 +227,31 @@ class TelematicsConfig(models.Model):
         ICP = self.env['ir.config_parameter'].sudo()
         return ICP.get_param(_PARAM_API_KEY, '')
 
+    def action_recompute_trip_tiers(self):
+        """คำนวณ Tier ของ Trip Log ทุกรายการใหม่ทั้งหมด — ใช้ตอน:
+        1) เพิ่งอัปเดตแก้บั๊ก "ไม่มี Config Active แล้วทุกทริปขึ้น Tier D
+           หมด" (2026-08-03) ทริปเก่าที่มี Tier ผิดค้างอยู่ต้อง trigger
+           recompute เองครั้งเดียวหลังอัปเดตโมดูล ไม่งั้นจะไม่เปลี่ยนอัตโนมัติ
+           (Tier เป็น stored computed field)
+        2) ทุกครั้งที่ Approve Scoring Config ชุดใหม่ที่มี threshold ต่างจาก
+           เดิม แล้วอยากให้ Tier ของทริปเก่าที่มีอยู่แล้ว sync ตาม threshold
+           ใหม่ด้วย (ปกติจะไม่ recompute ให้อัตโนมัติ ดู known_risks.md ข้อ 11)
+        เพิ่มปุ่มนี้ไว้ที่ Settings แทนที่จะต้องใช้ Odoo shell รันคำสั่ง
+        env['fleet.telematics.log'].search([])._compute_tier() เอง"""
+        self.ensure_one()
+        Log = self.env['fleet.telematics.log']
+        logs = Log.search([])
+        logs._compute_tier()
+        return {
+            'type': 'ir.actions.client',
+            'tag':  'display_notification',
+            'params': {
+                'title':   '🔄 Recompute Tier เสร็จแล้ว',
+                'message': f'คำนวณ Tier ใหม่ให้ครบ {len(logs)} ทริปแล้ว ตามเกณฑ์ของ Scoring Config ที่ Active อยู่ตอนนี้',
+                'type':    'success',
+            },
+        }
+
     def action_reconcile_devices(self):
         """ดึงรายการ Device ทั้งหมดจาก Backend (GET /api/v1/devices) มา
         เทียบกับที่ Odoo บันทึกไว้ (fleet.vehicle.telematics_device_id)

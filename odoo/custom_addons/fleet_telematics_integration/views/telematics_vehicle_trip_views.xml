@@ -32,10 +32,10 @@
                             <div class="o_row">
                                 <field name="date_from" widget="daterange"
                                        options="{'related_end_date': 'date_to'}"
-                                       string="ตั้งแต่วันที่"/>
+                                       string="ตั้งแต่วันที่" required="1"/>
                                 <field name="date_to" widget="daterange"
                                        options="{'related_start_date': 'date_from'}"
-                                       string="ถึงวันที่"/>
+                                       string="ถึงวันที่" required="1"/>
                             </div>
                             <field name="limit" string="แสดงต่อหน้า"/>
                         </group>

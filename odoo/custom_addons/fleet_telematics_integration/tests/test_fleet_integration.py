@@ -776,6 +776,88 @@ class TestUC04TripSync(FleetTelematicsBase):
         finally:
             ICP.set_param('fleet_telematics.mtd_api_url', 'http://test-backend:8001')
 
+    # ── เพิ่มตาม FDD §12.6: Trip Log List ต้อง "กรองตามคนขับ/วันที่/คะแนน/
+    # tier" — เดิมไม่มี field tier ให้กรองเลย (2026-08-03) ──────────────────
+    def test_11_tier_computed_from_active_scoring_config(self):
+        """tier ของแต่ละทริปต้องคำนวณจาก driver_score เทียบ threshold ของ
+        Scoring Config ที่ Active อยู่ตอนนี้ — ครบทั้ง 4 ระดับ A/B/C/D"""
+        Config = self.env['fleet.telematics.scoring.config']
+        Config.search([('is_active', '=', True)]).write({'is_active': False})
+        Config.create({
+            'name': 'TIER-FILTER-TEST',
+            'is_active': True,
+            'effective_date': '2025-01-01',
+            'score_base': 100.0, 'max_deduct_per_trip': 50.0,
+            'tier_a_min_score': 90.0, 'tier_b_min_score': 75.0,
+            'tier_c_min_score': 60.0,
+        })
+
+        Log = self.env['fleet.telematics.log']
+        cases = [(95.0, 'A'), (80.0, 'B'), (65.0, 'C'), (30.0, 'D')]
+        for score, expected_tier in cases:
+            trip = Log.create({
+                'vehicle_id':  self.v1.id,
+                'trip_start':  '2026-01-01 08:00:00',
+                'external_trip_id': f'TIER-TEST-{expected_tier}',
+                'driver_score': score,
+            })
+            self.assertEqual(
+                trip.tier, expected_tier,
+                f"score={score} ควรได้ tier {expected_tier} แต่ได้ {trip.tier}")
+
+    # ── แก้บั๊ก 2026-08-03: ไม่มี Scoring Config Active เลยในระบบ ไม่ควร
+    # บังคับทุกทริปได้ Tier D — เจอจากหน้า Trip Logs จริงที่ทุกแถวขึ้น
+    # "D — ต้องปรับปรุง" หมด ทั้งที่ driver_score สูงถึง 90-100 (สาเหตุ: ไม่มี
+    # config active ตอนนั้น แล้ว `if cfg and score >= ...` เป็น False เสมอ) ──
+    def test_11b_no_config_at_all_should_not_force_tier_d(self):
+        """ไม่มี Scoring Config Active เลยในระบบ → driver_score สูง (เช่น 95)
+        ต้องได้ Tier A ไม่ใช่ถูกบังคับเป็น D เหมือนที่เคยเป็นบั๊ก"""
+        self.env['fleet.telematics.scoring.config'].search(
+            [('is_active', '=', True)]).write({'is_active': False})
+
+        trip = self.env['fleet.telematics.log'].create({
+            'vehicle_id':  self.v1.id,
+            'trip_start':  '2026-01-01 08:00:00',
+            'external_trip_id': 'TIER-NO-CONFIG-TEST',
+            'driver_score': 95.0,
+        })
+        self.assertEqual(trip.tier, 'A')
+
+    def test_11c_recompute_button_fixes_stale_tier_d(self):
+        """ปุ่ม action_recompute_trip_tiers() (หน้า Settings) ต้องคำนวณ Tier
+        ของทริปเก่าที่ค้างเป็น D (จากตอนไม่มี config active) ใหม่ให้ถูกต้อง
+        ทันทีที่มี Scoring Config Active แล้ว — จำลองสถานการณ์จริงที่เจอ:
+        สร้างทริปตอนไม่มี config active (ติด D ค้าง) แล้วค่อยมี config
+        active ทีหลัง ต้องกดปุ่มนี้ให้ recompute ใหม่ได้"""
+        Config = self.env['fleet.telematics.scoring.config']
+        Config.search([('is_active', '=', True)]).write({'is_active': False})
+
+        trip = self.env['fleet.telematics.log'].create({
+            'vehicle_id':  self.v1.id,
+            'trip_start':  '2026-01-01 08:00:00',
+            'external_trip_id': 'TIER-RECOMPUTE-TEST',
+            'driver_score': 95.0,
+        })
+        self.assertEqual(trip.tier, 'A')  # fallback threshold ก็ควรได้ A อยู่แล้ว
+
+        # จำลองว่าตอนนั้นดันได้ D ผิดๆ (เช่นจากบั๊กเดิมก่อนแก้) แล้วมี
+        # config active เข้ามาทีหลังพร้อม threshold สูงกว่า fallback เดิม
+        trip.tier = 'D'
+        Config.create({
+            'name': 'RECOMPUTE-TEST-CFG', 'is_active': True,
+            'effective_date': '2025-01-01',
+            'score_base': 100.0, 'max_deduct_per_trip': 50.0,
+            'tier_a_min_score': 90.0, 'tier_b_min_score': 75.0,
+            'tier_c_min_score': 60.0,
+        })
+
+        cfg_rec = self.env['fleet.telematics.config'].search([], limit=1) \
+            or self.env['fleet.telematics.config'].with_context(
+                allow_telematics_config_create=True).create({'name': 'Settings'})
+        cfg_rec.action_recompute_trip_tiers()
+
+        self.assertEqual(trip.tier, 'A')
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # UC-10 — Audit Log บน Incentive state change (models/telematics_incentive.py)
@@ -965,6 +1047,18 @@ class TestUC10IncentiveAuditLog(FleetTelematicsBase):
         tier, pct = inc._local_tier_from_score(return_pct=True)
         self.assertEqual(tier, 'D')
         self.assertEqual(pct, 2.5)
+
+    # ── แก้บั๊ก 2026-08-03: ไม่มี Scoring Config Active เลยในระบบ ไม่ควร
+    # บังคับทุกคนได้ Tier D — เจอจากหน้า Trip Logs ที่ทุกแถวขึ้น "D — ต้อง
+    # ปรับปรุง" หมด ทั้งที่ driver_score สูงถึง 90-100 ──────────────────────
+    def test_19b_no_config_at_all_should_not_force_tier_d(self):
+        """ไม่มี Scoring Config Active เลยในระบบ (cfg เป็น empty recordset)
+        → avg_score สูง (เช่น 95) ต้องได้ Tier A ไม่ใช่ถูกบังคับเป็น D"""
+        self.env['fleet.telematics.scoring.config'].search(
+            [('is_active', '=', True)]).write({'is_active': False})
+        inc = self._make_incentive(avg_score=95.0, scoring_config_id=False)
+        tier = inc._local_tier_from_score()
+        self.assertEqual(tier, 'A')
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1396,6 +1490,8 @@ class TestVehicleTripHistoryWizard(FleetTelematicsBase):
         mock_resp.json.return_value = {'trips': [], 'total': 0, 'total_pages': 1}
         wiz = self.env['fleet.telematics.vehicle.trip.history'].create({
             'vehicle_id': self.v1.id,  # self.v1 มี telematics_device_id ผูกไว้แล้ว
+            'date_from':  '2026-01-01',
+            'date_to':    '2026-01-31',
         })
         with patch('requests.get', return_value=mock_resp):
             wiz.action_fetch()
@@ -1409,6 +1505,64 @@ class TestVehicleTripHistoryWizard(FleetTelematicsBase):
         })
         self.assertEqual(wiz.vehicle_license_plate, self.v1.license_plate)
         self.assertEqual(wiz.telematics_device_id, self.v1.telematics_device_id)
+
+    # ── เพิ่ม: บังคับเลือกช่วงวันที่ก่อนดึงข้อมูลเสมอ (แก้ตามที่ผู้ใช้ขอ
+    # 2026-08-03 — เดิมดึงได้แม้ไม่เลือกวันที่เลย ดึงทริปทั้งหมดแบบไม่จำกัด
+    # ช่วง) ───────────────────────────────────────────────────────────────
+    def test_05_fetch_without_date_range_raises(self):
+        """ไม่เลือกช่วงวันที่เลย → ต้อง raise เตือนก่อนดึงข้อมูล"""
+        wiz = self.env['fleet.telematics.vehicle.trip.history'].create({
+            'vehicle_id': self.v1.id,
+        })
+        with self.assertRaises(UserError):
+            wiz.action_fetch()
+
+    def test_06_fetch_with_only_date_from_raises(self):
+        """เลือกแค่ "ตั้งแต่วันที่" อย่างเดียว ไม่ครบคู่ → ต้อง raise เช่นกัน"""
+        wiz = self.env['fleet.telematics.vehicle.trip.history'].create({
+            'vehicle_id': self.v1.id,
+            'date_from':  '2026-01-01',
+        })
+        with self.assertRaises(UserError):
+            wiz.action_fetch()
+
+    def test_07_fetch_with_date_from_after_date_to_raises(self):
+        """"ตั้งแต่วันที่" มาหลัง "ถึงวันที่" → ต้อง raise แจ้งลำดับผิด"""
+        wiz = self.env['fleet.telematics.vehicle.trip.history'].create({
+            'vehicle_id': self.v1.id,
+            'date_from':  '2026-02-01',
+            'date_to':    '2026-01-01',
+        })
+        with self.assertRaises(UserError):
+            wiz.action_fetch()
+
+    def test_08_render_shows_synced_count_summary(self):
+        """ผลลัพธ์ต้องสรุปจำนวนทริปที่ Sync แล้ว/ยังไม่ Sync ให้เห็นชัดเจน
+        ไม่ใช่แค่ไอคอนรายแถวเฉยๆ (แก้ตามที่ผู้ใช้ถาม 2026-08-03)"""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            'trips': [
+                {'id': 1, 'trip_start': '2026-01-01T08:00:00',
+                 'trip_end': '2026-01-01T08:30:00', 'driver_id': 0,
+                 'distance_km': 5.0, 'driver_score': 90.0,
+                 'synced_to_odoo': True},
+                {'id': 2, 'trip_start': '2026-01-02T08:00:00',
+                 'trip_end': '2026-01-02T08:30:00', 'driver_id': 0,
+                 'distance_km': 3.0, 'driver_score': 80.0,
+                 'synced_to_odoo': False},
+            ],
+            'total': 2, 'total_pages': 1,
+        }
+        wiz = self.env['fleet.telematics.vehicle.trip.history'].create({
+            'vehicle_id': self.v1.id,
+            'date_from':  '2026-01-01',
+            'date_to':    '2026-01-31',
+        })
+        with patch('requests.get', return_value=mock_resp):
+            wiz.action_fetch()
+        self.assertIn('Sync เข้า Odoo แล้ว 1 ทริป', wiz.result_html)
+        self.assertIn('ยังไม่ Sync 1 ทริป', wiz.result_html)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

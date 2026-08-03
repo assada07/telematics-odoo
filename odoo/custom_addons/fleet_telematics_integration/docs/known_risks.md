@@ -109,3 +109,44 @@ List/Form ทันที ทั้งที่ข้อมูลในฐาน
 ประการ (ชื่อ label ยังโชว์ว่า "Active" เหมือนเดิม) เปลี่ยนแค่ชื่อ field
 ภายในเท่านั้น
 
+## 11. ⚠️ ข้อควรรู้ — Tier บน Trip Log อาจไม่อัปเดตย้อนหลังถ้า Scoring Config เปลี่ยน
+FDD §12.6 ระบุว่า Trip Log List ต้องกรองได้ตาม Tier ด้วย (เพิ่มเข้ามาแล้วที่
+`fleet.telematics.log.tier`) — field นี้เป็น `compute` + `store=True` โดย
+`@api.depends('driver_score')` เท่านั้น (ไม่ผูกกับ Scoring Config โดยตรง
+เพราะทริปไม่ได้เก็บ `scoring_config_id` ของตัวเองแบบ Incentive)
+
+**ผลที่ตามมา:** Tier ของทริปจะคำนวณจาก threshold ของ Config ที่ Active
+อยู่ ณ ตอนที่ทริปนั้นถูกสร้าง/แก้ไข driver_score เท่านั้น — ถ้า Admin ไป
+เปลี่ยน Scoring Config ใหม่ทีหลัง (threshold ต่างจากเดิม) **ทริปเก่าที่มี
+อยู่แล้วจะไม่ถูกคำนวณ Tier ใหม่ให้อัตโนมัติ** ต้องรอให้มีการเขียนทับ
+driver_score ของทริปนั้นอีกครั้งถึงจะ recompute — เป็นพฤติกรรมที่ตั้งใจ
+(เพื่อไม่ต้อง recompute ทริปทั้งหมดทุกครั้งที่แก้ config ซึ่งอาจช้ามากถ้ามี
+ทริปสะสมเยอะ) แต่ถ้าต้องการ Tier ที่ sync กับ config ปัจจุบันเสมอ ต้อง
+เพิ่ม logic recompute แบบ batch ตอน Approve config ใหม่ (ยังไม่ได้ทำ)
+
+## 12. ✅ แก้แล้ว — ไม่มี Scoring Config Active เลย → ทุกทริปขึ้น Tier D หมด
+**อาการ:** ในหน้า Trip Logs ทุกแถวขึ้น badge แดง "D — ต้องปรับปรุง" หมดทุก
+รายการ แม้แต่ทริปที่ driver_score = 90, 100, 99.97 ก็ตาม ดูเหมือนข้อมูลไม่
+อัปเดต/ดึงไม่ได้ แต่จริงๆ ข้อมูลอื่นครบถูกต้องทุกอย่าง มีแค่ Tier ที่ผิด
+
+**สาเหตุจริง:** ทั้ง `_compute_tier()` (`telematics_log.py`) และ
+`_local_tier_from_score()` (`telematics_incentive.py`) เขียนเงื่อนไขแบบ
+`if cfg and score >= cfg.tier_a_min_score` — ตอนที่**ไม่มี Scoring Config
+Active อยู่เลยในระบบ** (`cfg` เป็น empty recordset ซึ่งเป็น falsy ใน
+Python) ทุกเงื่อนไขที่ขึ้นต้นด้วย `cfg and ...` จะเป็น False เสมอ ไม่ว่า
+score จะสูงแค่ไหน ตกไปที่ `else: tier = 'D'` หมดทุกครั้ง
+
+**วิธีแก้:** เปลี่ยนมาใช้ threshold ค่าเริ่มต้นมาตรฐาน (A=90 / B=75 / C=60
+— ตรงกับ default field ของ Scoring Config เอง) เป็น fallback แทนตอนไม่มี
+config active แล้วเทียบ score กับ threshold นั้นตามปกติ ไม่ใช่ข้ามไป D
+ตรงๆ ทั้งสองจุดแล้ว พร้อมเทส `test_11b_...`/`test_19b_...` กันบั๊กนี้กลับมา
+
+**⚠️ สำคัญ — ข้อมูลเก่าที่มีอยู่แล้วไม่ recompute อัตโนมัติ:** เพราะ `tier`
+เป็น stored computed field การอัปเกรดโมดูลเฉยๆ ไม่ทำให้ค่าเก่าที่เคยถูก
+เขียนผิดเป็น D ไปแล้วถูกคำนวณใหม่ให้อัตโนมัติ ต้อง trigger recompute เอง
+ครั้งเดียวหลังอัปเกรด เช่น รันผ่าน Odoo shell:
+```python
+env['fleet.telematics.log'].search([])._compute_tier()
+env.cr.commit()
+```
+
