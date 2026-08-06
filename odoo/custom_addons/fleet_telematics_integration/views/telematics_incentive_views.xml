@@ -66,14 +66,17 @@
                         ⚠️ ตัวเลขโบนัสนี้คำนวณจาก Local Fallback เพราะเรียก Backend ไม่สำเร็จ
                         — กด "Refresh from Backend" อีกครั้งก่อน Approve จริง
                     </div>
-                    <!-- ต้องเช็คว่าเลือก driver_id แล้วด้วย ไม่ใช่แค่ tier=='D'
-                         เพราะ field นี้มี default='D' ตั้งแต่สร้าง record ใหม่
-                         (ก่อนเลือกพนักงาน/คำนวณอะไรเลย) กันแถบเตือนขึ้นผิด
-                         จังหวะตั้งแต่ยังเป็นฟอร์มเปล่าอยู่ -->
+                    <!-- แก้ 2026-08-04: เปลี่ยนจากเช็ค incentive_tier != 'D'
+                         มาเป็น bonus_pct > 0 แทน เพราะ Tier เปลี่ยนเป็นไดนามิก
+                         แล้ว (Admin ตั้งชื่อ Tier ต่ำสุดเป็นอะไรก็ได้ ไม่จำเป็น
+                         ต้องชื่อ "D" เสมอไปอีกต่อไป) — ความหมายจริงๆ ของแถบ
+                         เตือนนี้คือ "ไม่ได้โบนัสเลย" ซึ่งเช็คจาก bonus_pct
+                         ตรงๆ แม่นกว่า ยังเช็ค driver_id คู่ด้วยกันแถบเตือน
+                         ไม่ขึ้นผิดจังหวะตั้งแต่ฟอร์มยังว่างเปล่าอยู่ -->
                     <div class="alert alert-danger" role="alert"
-                         invisible="incentive_tier != 'D' or not driver_id">
+                         invisible="bonus_pct &gt; 0 or not driver_id">
                         🚫 พนักงานคนนี้ <b>ไม่ได้รับโบนัส</b> ในรอบนี้ — คะแนนเฉลี่ยต่ำกว่า
-                        เกณฑ์ขั้นต่ำของ Tier C (Tier D — Needs Improvement)
+                        เกณฑ์ขั้นต่ำของทุก Tier ที่ตั้งไว้ (Tier: <field name="incentive_tier" readonly="1" nolabel="1" class="oe_inline"/>)
                     </div>
                     <div class="alert alert-info" role="alert" invisible="not is_locked">
                         🔒 ใบโบนัสนี้ผ่านสถานะ Draft ไปแล้ว — แก้ไขข้อมูลไม่ได้
@@ -109,9 +112,11 @@
                             <field name="bonus_pct" readonly="1"/>
                             <field name="bonus_source" readonly="1"/>
                             <field name="bonus_last_synced" readonly="1"/>
-                            <!-- แสดงเฉพาะตอน Tier D เพื่อยืนยันว่าแจ้งเตือน HR ไปแล้ว -->
+                            <!-- แสดงเฉพาะตอนไม่ได้โบนัสเลย เพื่อยืนยันว่าแจ้งเตือน
+                                 HR ไปแล้ว (แก้ 2026-08-04: เช็ค bonus_pct แทน
+                                 ชื่อ tier ตรงๆ) -->
                             <field name="tier_d_notified" readonly="1"
-                                   invisible="incentive_tier != 'D'"
+                                   invisible="bonus_pct &gt; 0"
                                    string="แจ้งเตือน HR แล้ว"/>
                         </group>
                         <group>

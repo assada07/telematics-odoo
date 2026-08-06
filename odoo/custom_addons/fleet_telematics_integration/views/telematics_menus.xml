@@ -2,20 +2,27 @@
 <!--
   views/telematics_menus.xml
   ไฟล์สร้างแถบเมนูหลักและเมนูย่อยของ Fleet Telematics
-  โครงสร้างตรงตาม UI Structure ที่กำหนด 100%
+
+  แก้ 2026-08-05: จัดเมนู Dashboard/Reports ให้ตรงตาม FDD §12.6 เป๊ะๆ แล้ว
+  (เดิมมีเมนูเกินสเปคปนอยู่ ทำให้ Dashboard กับ Reports ดูซ้ำซ้อนกัน —
+  "Fuel & Energy Analysis" ซ้ำกับ "Fuel Efficiency Report", "Incentive
+  Overview" ซ้ำกับ "Incentive Summary" ฯลฯ — ซ่อนเมนูที่เกินสเปคออกแล้ว
+  ไม่ได้ลบ action/view ทิ้ง ดู comment แต่ละจุดในไฟล์นี้)
 
   Fleet Telematics (Root App)
-  ├── Dashboard
-  │   ├── KPI Summary
-  │   ├── Fuel & Energy Analysis
-  │   └── Incentive Overview
+  ├── Dashboard                     ← FDD §12.6: มีแค่ 2 อย่าง
+  │   ├── Live Map                     (Fleet Live Map)
+  │   └── KPI Summary                  (Driver Dashboard)
   ├── Trip Logs
-  │   ├── Trip List
-  │   └── Trip Analytics
+  │   ├── Trip List                    (คลิกแถวไหนก็ได้ → เปิด Trip Detail
+  │   │                                  Form + Map + Event list ให้เอง)
+  │   └── Vehicle Trip History
   ├── Event Logs
   ├── Scoring Config
   ├── Incentive / Bonus
-  ├── Reports (Export PDF/Excel)
+  ├── Reports                       ← FDD §12.6 ต้องการแค่ 1 อย่าง
+  │   ├── Incentive Summary            (Pivot — ตรงสเปค)
+  │   └── Backend Reports (ข้อมูลสด)   (เกินสเปค แต่เก็บไว้ตามที่ขอ)
   └── Settings
 -->
 <odoo>
@@ -59,19 +66,30 @@
               action="action_telematics_driver_dashboard"
               sequence="10"/>
 
-    <!-- Fuel &amp; Energy Analysis: Fuel Usage, Fuel/km, Idle Time -->
+    <!-- Fuel & Energy Analysis — ปิดเมนูนี้แล้ว (2026-08-05)
+         ไม่มีใน FDD §12.6 เลย (ตาราง Views ที่ต้องพัฒนา กำหนดแค่ Driver
+         Dashboard + Fleet Live Map สำหรับ Dashboard เท่านั้น) เพิ่มเข้ามา
+         เกินสเปคทีหลัง ทับซ้อนกับ "Fuel Efficiency Report" ในเมนู Reports
+         (ข้อมูลชุดเดียวกัน แค่มุมมอง group by ต่างกัน) — ไม่ลบ action/view
+         ทิ้ง เผื่อยังอยากเอากลับมาใช้ทีหลัง แค่ซ่อนเมนูออก
     <menuitem id="menu_telematics_dashboard_fuel"
               name="Fuel &amp; Energy Analysis"
               parent="menu_telematics_dashboard"
               action="action_telematics_fuel_summary"
               sequence="20"/>
+    -->
 
-    <!-- Incentive Overview: กราฟแท่งโบนัส + สัดส่วน Tier -->
+    <!-- Incentive Overview — ปิดเมนูนี้แล้ว (2026-08-05)
+         ไม่มีใน FDD §12.6 เช่นกัน — สเปคมีแค่ "Incentive Summary" (Pivot)
+         ในเมนู Reports เท่านั้น ไม่มี Dashboard แยกต่างหากสำหรับเรื่องนี้
+         ทับซ้อนกับ "Incentive Summary" ในเมนู Reports (โมเดลเดียวกัน) -->
+    <!--
     <menuitem id="menu_telematics_dashboard_incentive"
               name="Incentive Overview"
               parent="menu_telematics_dashboard"
               action="action_telematics_incentive_summary"
               sequence="30"/>
+    -->
 
     <!-- Live Map (Real-time) — UC-06 (เพิ่มใหม่: เดิมไม่มี widget เลย) -->
     <record id="action_telematics_live_map" model="ir.actions.client">
@@ -106,12 +124,12 @@
               action="action_telematics_vehicle_trip_history"
               sequence="15"/>
 
-    <!-- Trip Analytics — Graph + Pivot -->
-    <menuitem id="menu_telematics_trip_analytics"
-              name="Trip Analytics"
-              parent="menu_telematics_trip_logs"
-              action="action_telematics_analytics"
-              sequence="20"/>
+    <!-- "Trip Detail" (Form + Map(Leaflet) + Event list ตาม FDD §12.6) ไม่มี
+         เมนูของตัวเอง — เข้าถึงได้อยู่แล้วโดยคลิกแถวไหนก็ได้ในเมนู "Trip
+         List" ด้านบน (มาตรฐาน List→Form ของ Odoo) เคยลองทำเป็นเมนูแยก
+         (view_mode="form,list") ไปก่อนหน้านี้แล้วพัง (เปิดเป็นฟอร์มเปล่าๆ
+         แทนที่จะเป็นทริปจริง เพราะ Odoo ต้องมี record ID กำกับเสมอ) เอาออก
+         แล้ว ไม่ต้องมีเมนูแยกสำหรับ Trip Detail อีก -->
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <!--  2.3 Event Logs                                                 -->
@@ -148,40 +166,65 @@
               parent="menu_fleet_telematics_root"
               sequence="60"/>
 
-    <!-- Driver Score Report — แก้แล้ว: เดิมชี้ไป action_telematics_incentive (ผิด ซ้ำกับเมนู Incentive/Bonus) -->
+    <!-- Driver Score Report / Fuel Efficiency Report / Fleet Summary /
+         Fleet Summary — ปิดเมนูทั้ง 3 นี้แล้ว (2026-08-05)
+         ไม่มีใน FDD §12.6 เลยสักตัว — สเปคกำหนดเมนู Reports ไว้แค่ 3 อย่าง:
+         "Monthly Score Report" (PDF), "Energy Report" (PDF), และ
+         "Incentive Summary" (Pivot) เท่านั้น ของ 3 อันนี้ซ้ำเนื้อหากับของที่
+         มีอยู่แล้ว (Trip Logs, Incentive/Bonus) แค่ปรับมุมมอง group by
+         ต่างกัน — ไม่ลบ action/view ทิ้ง เผื่อยังอยากเอากลับมาใช้ทีหลัง
+         แค่ซ่อนเมนูออกเท่านั้น
     <menuitem id="menu_telematics_report_driver_score"
               name="Driver Score Report"
               parent="menu_telematics_reports"
               action="action_telematics_driver_score_report"
               sequence="10"/>
-
-    <!-- Fuel Efficiency Report -->
     <menuitem id="menu_telematics_report_fuel"
               name="Fuel Efficiency Report"
               parent="menu_telematics_reports"
               action="action_telematics_report_fuel_efficiency"
               sequence="20"/>
-
-    <!-- Fleet Summary -->
     <menuitem id="menu_telematics_report_fleet_summary"
               name="Fleet Summary"
               parent="menu_telematics_reports"
               action="action_telematics_report_fleet_summary"
               sequence="30"/>
+    -->
 
-    <!-- Incentive Summary -->
-    <menuitem id="menu_telematics_report_incentive"
-              name="Incentive Summary"
-              parent="menu_telematics_reports"
-              action="action_telematics_report_incentive_summary"
-              sequence="40"/>
-
-    <!-- Fuel &amp; Score Report — รวม wizard ใหม่ที่ครอบคลุมทุก endpoint -->
+    <!-- Backend Reports (ข้อมูลสด) — เอากลับมาแล้วตามที่ผู้ใช้ขอ
+         (2026-08-05 รอบ 3) เคยซ่อนไปก่อนหน้านี้เพราะไม่มีในสเปค FDD แต่
+         มีประโยชน์จริงตอนอยากเช็คข้อมูลสดจาก Backend โดยตรง (ไม่ผ่านข้อมูล
+         sync ค้างใน Odoo) หรือใช้ debug ปัญหาการ sync เทียบข้อมูล 2 ฝั่ง -->
     <menuitem id="menu_telematics_report_backend_live"
               name="Backend Reports (ข้อมูลสด)"
               parent="menu_telematics_reports"
               action="action_telematics_backend_report"
               sequence="50"/>
+
+    <!-- Monthly Score Report / Energy Report — ลบเมนูซ้ำออกแล้ว (2026-08-05
+         รอบ 2) เดิมลองทำเป็นเมนูแยกในนี้ (ชี้ไป action เดียวกับ
+         "Incentive / Bonus" และ "Trip List" ตามลำดับ) แต่กลายเป็นซ้ำซ้อน
+         กับเมนูที่มีอยู่แล้ว — 2 หน้านี้พาไปที่ list เดียวกันเป๊ะ ผู้ใช้เลย
+         งงว่าทำไมมี 2 เมนูโชว์ข้อมูลเหมือนกัน
+
+         **ไม่ต้องมีเมนูแยกสำหรับ Monthly Score Report / Energy Report เลย
+         เพราะปุ่ม Print ทั้งคู่ผูกไว้ผ่าน binding_model_id อยู่แล้ว จะโผล่
+         ในเมนู Print อัตโนมัติทันทีที่เข้า:**
+           - Monthly Score & Bonus Report → เข้าเมนู "Incentive / Bonus"
+             เลือกใบโบนัส แล้วกด Print
+           - Energy & Fuel Efficiency Report → เข้าเมนู "Trip Logs > Trip
+             List" เลือกทริป แล้วกด Print
+    -->
+
+    <!-- Incentive Summary (FDD §12.6: Pivot วิเคราะห์โบนัสรายแผนก/เดือน/ปี)
+         — ของเดิมตรงสเปคอยู่แล้ว เหลือเป็นรายการเดียวในเมนู Reports ตอนนี้
+         (ตรงสเปคเป๊ะที่สุดแล้ว — มีแค่สิ่งที่ list/pivot ธรรมดาไม่มีให้ใช้
+         อยู่ที่อื่น ไม่ซ้ำกับเมนูไหนเลย) -->
+    <menuitem id="menu_telematics_report_incentive"
+              name="Incentive Summary"
+              parent="menu_telematics_reports"
+              action="action_telematics_report_incentive_summary"
+              sequence="30"/>
 
     <!-- Payload Inbox — ปิดเมนูแล้ว
          ไม่ได้อยู่ใน scope FDD เลยสักบรรทัด เป็นของที่ทีมเดิมเขียนทิ้งไว้

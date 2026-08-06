@@ -43,10 +43,13 @@
          (คู่กับการปิด perm_read ฝั่ง ir.model.access.csv — ถ้าในอนาคตเปิด
           perm_read ให้ user อีกครั้ง rule นี้จะคุมไม่ให้เห็นข้ามคน)
 
-         ใช้ driver_user_id (related+store field แบบ flat บน
-         fleet.telematics.incentive โดยตรง — ดู models/telematics_incentive.py)
+         ใช้ driver_user_id (field ธรรมดา sync ค่าเองใน create()/write()
+         บน fleet.telematics.incentive — ดู models/telematics_incentive.py)
          แทนการเขียน domain แบบ dotted-path หลายชั้น (driver_id.user_id)
-         ตรงๆ ซึ่งเคยทำให้ ir.rule ของโมเดลนี้ parse ไม่ผ่านตอน upgrade -->
+         ตรงๆ ซึ่งเคยทำให้ ir.rule ของโมเดลนี้ parse ไม่ผ่านตอน upgrade —
+         แก้บั๊ก 2026-08-04: เดิมใช้ related=driver_id.user_id, store=True
+         ก็เคยพัง parse บน Odoo 19 เหมือนกัน (ดู known_risks.md ข้อ 15)
+         เปลี่ยนมาเป็น field ธรรมดา sync เองแทน related= ไปเลยตัดปัญหา -->
     <record id="rule_telematics_incentive_own_only" model="ir.rule">
         <field name="name">Telematics Incentive: Driver เห็นเฉพาะของตัวเอง</field>
         <field name="model_id" ref="model_fleet_telematics_incentive"/>

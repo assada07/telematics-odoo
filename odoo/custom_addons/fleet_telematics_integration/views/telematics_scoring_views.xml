@@ -28,9 +28,7 @@
                 <field name="name"/>
                 <field name="effective_date"/>
                 <field name="score_base"/>
-                <field name="tier_a_min_score"/>
-                <field name="tier_b_min_score"/>
-                <field name="tier_c_min_score"/>
+                <field name="tier_summary" string="Tiers"/>
                 <field name="last_push_at"/>
                 <field name="last_push_status"/>
                 <field name="approved_by_id" optional="show"/>
@@ -166,36 +164,29 @@
                                 <field name="idling_deduct" readonly="is_locked"/>
                                 <field name="bump_deduct" readonly="is_locked"/>
                             </group>
+                            <!-- Live Formula Preview — อัปเดตสดตามค่าที่กรอกด้านบน
+                                 โดยไม่ต้อง save ก่อน (non-stored compute field) -->
+                            <field name="formula_preview" widget="html" nolabel="1"/>
                         </page>
 
                         <!-- Tab 3: Incentive Tiers -->
                         <page string="Incentive Tiers" name="tiers">
-                            <group>
-                                <group string="Tier A — Excellent">
-                                    <field name="tier_a_min_score" readonly="is_locked"/>
-                                    <field name="tier_a_bonus_pct" readonly="is_locked"/>
-                                </group>
-                                <group string="Tier B — Good">
-                                    <field name="tier_b_min_score" readonly="is_locked"/>
-                                    <field name="tier_b_bonus_pct" readonly="is_locked"/>
-                                </group>
-                            </group>
-                            <group>
-                                <group string="Tier C — Fair">
-                                    <field name="tier_c_min_score" readonly="is_locked"/>
-                                    <field name="tier_c_bonus_pct" readonly="is_locked"/>
-                                </group>
-                                <group string="Tier D — Needs Improvement">
-                                    <field name="tier_d_min_score" readonly="is_locked"/>
-                                    <field name="tier_d_bonus_pct" readonly="is_locked"/>
-                                    <span class="text-muted fst-italic">
-                                        ปกติ 0% ตามสเปค — คะแนนต่ำกว่า Tier C
-                                        ทั้งหมดถือเป็น Tier D เสมอ (min_score
-                                        เก็บไว้เพื่อความสอดคล้อง ไม่ได้ใช้
-                                        เทียบในการจัด tier จริง)
-                                    </span>
-                                </group>
-                            </group>
+                            <p class="text-muted">
+                                กำหนด Tier ได้เอง เพิ่ม/ลบ/เปลี่ยนชื่อได้ตามต้องการ
+                                (ไม่ต้องมีแค่ 4 ระดับ A/B/C/D ตายตัวอีกต่อไป) —
+                                ระบบจะเรียง Tier จาก Min Score มากไปน้อยเสมอ
+                                แล้วจัดพนักงานเข้า Tier แรกที่คะแนนเฉลี่ยของเขา
+                                ≥ Min Score ถ้าคะแนนต่ำกว่า Tier ที่ต่ำที่สุด
+                                ที่ตั้งไว้ทั้งหมด จะถือว่า "Below Minimum"
+                                (ไม่ได้รับโบนัส)
+                            </p>
+                            <field name="tier_ids" readonly="is_locked">
+                                <list editable="bottom">
+                                    <field name="name" string="ชื่อ Tier"/>
+                                    <field name="min_score" string="Min Score"/>
+                                    <field name="bonus_pct" string="Bonus %"/>
+                                </list>
+                            </field>
                         </page>
                     </notebook>
                 </sheet>

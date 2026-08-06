@@ -150,3 +150,133 @@ env['fleet.telematics.log'].search([])._compute_tier()
 env.cr.commit()
 ```
 
+## 13. ✅ แก้แล้ว — ต้นตอที่แท้จริงของ error "Invalid field ...scoring.config.active" ที่ค้างมานาน
+หลังแก้ field `active` → `is_active` ในรอบก่อนๆ (ข้อ 9) มีคนแจ้งว่ายังเจอ
+error เดิมซ้ำอีกที่หน้า **Driver Dashboard** ทั้งที่ grep ทั้งโปรเจกต์ (`*.py`,
+`*.xml`) ก็ไม่เจอ field `active` เหลืออยู่ที่ไหนแล้ว
+
+**สาเหตุจริง:** จุดที่หลงเหลืออยู่คือใน **`static/src/js/driver_dashboard.js`**
+(โค้ด JavaScript ของ Driver Dashboard ซึ่งเป็น OWL client action เรียก RPC
+เอง) มีการ hardcode ชื่อ field เป็น `"active"` ตรงๆ ในตัวแปร `args` ของ
+`search_read` — ไฟล์ `.js` ไม่เคยถูก grep ด้วยตอนไล่แก้ field รอบก่อนๆ เลย
+(เพราะไล่แค่ `*.py`/`*.xml`) จึงหลุดรอดมาได้นานหลายรอบ
+
+**วิธีแก้:** เปลี่ยน `["active", "=", true]` → `["is_active", "=", true]`
+ใน `static/src/js/driver_dashboard.js` — เช็คซ้ำทั้ง `static/src/` ทั้ง
+โฟลเดอร์แล้วไม่มี field `active` (ชื่อเก่า) หลงเหลืออยู่ที่ไหนอีก
+
+**บทเรียน:** เวลาไล่หา field reference ที่เหลือหลังเปลี่ยนชื่อ field ต้อง
+grep ให้ครอบคลุม **`static/src/**/*.js`** ด้วยเสมอ ไม่ใช่แค่ `*.py`/`*.xml`
+— โมดูลที่มี OWL component เรียก RPC เองมักมี field name/domain ฝังอยู่ใน
+JS ตรงๆ แบบนี้
+
+## 14. ✅ แก้แล้ว — ใบโบนัสขึ้น "จำนวนทริปทั้งหมด: 0" ค้างตลอด ทั้งที่พนักงานมีทริปจริง
+**อาการ:** เปิดใบ Incentive/Bonus ของพนักงานคนหนึ่ง เห็น "จำนวนทริปทั้งหมด:
+0", "คะแนนเฉลี่ย: 0.00" ทั้งที่พนักงานคนนั้นมีทริป synced จริงในช่วงวันที่
+เดียวกัน (เช็คจากหน้า Trip Logs แล้วเจอจริง) ผลคือได้ Tier D และ Bonus 0%
+ทั้งที่ไม่ควรเป็นแบบนั้น
+
+**สาเหตุจริง:** `total_trips`, `avg_score`, `min_score`, `total_distance_km`,
+`total_harsh_events`, `total_idle_min` เป็น stored computed field ผูก
+`@api.depends('driver_id', 'date_from', 'date_to')` เท่านั้น — Odoo จะ
+คำนวณให้แค่ตอนที่ 3 field นี้เปลี่ยนค่า (ปกติคือตอนสร้าง record จาก cron
+รายเดือน) แล้ว**ไม่มีวัน recompute อัตโนมัติอีกเลย** แม้จะมีทริปใหม่ของ
+พนักงานคนนั้น sync เข้ามาเพิ่มทีหลังก็ตาม เพราะ dependency ไม่ได้ผูกกับ
+record ใน `fleet.telematics.log` โดยตรง (เป็นแค่ `search()` ข้าม model
+ซึ่ง Odoo ไม่รู้จักเป็น dependency ที่ track ได้) — ถ้าใบโบนัสถูกสร้างตอน
+Backend ยังมีปัญหา sync ไม่ได้ (ตามที่ debug กันมาก่อนหน้านี้) ตัวเลขจะค้าง
+เป็น 0 ตลอดไปแม้ทริปจะ sync สำเร็จภายหลังแล้วก็ตาม — เป็นบั๊กแพทเทิร์น
+เดียวกับข้อ 11 (Tier บน Trip Log) เป๊ะๆ
+
+**วิธีแก้:** เพิ่มการเรียก `self._compute_incentive()` ซ้ำในตอนต้นของ
+`_apply_backend_bonus()` — ฟังก์ชันนี้ถูกเรียกทุกครั้งที่กดปุ่ม "Refresh
+from Backend" หรือกด "Confirm" (ทั้งสองจุดใช้ได้เฉพาะตอน Draft เท่านั้น จึง
+ไม่ชนกับ write-lock หลัง Confirm) ทำให้ตัวเลขทริปสดใหม่เสมอก่อนจะคำนวณ
+Tier/Bonus และก่อนจะล็อกตัวเลขถาวร
+
+**สำหรับใบโบนัสเก่าที่ค้างเป็น 0 อยู่แล้ว (เช่นใบที่ Confirm ไปแล้ว):**
+ต้องกด **"รีเซ็ต"** กลับเป็น Draft ก่อน แล้วกด **"Refresh from Backend"**
+อีกครั้ง ตัวเลขถึงจะอัปเดตให้ถูกต้อง — ระบบไม่ recompute ใบที่ Confirm/
+Approve ไปแล้วให้อัตโนมัติ (ตั้งใจ เพื่อความโปร่งใส ป้องกันตัวเลขเปลี่ยน
+เองหลังอนุมัติไปแล้ว)
+
+## 15. ✅ แก้แล้ว — Upgrade module พังด้วย ParseError "โดเมนไม่ถูกต้อง" ที่ ir.rule ของ Incentive
+**อาการ:** กด Upgrade module แล้วเจอ `RPC_ERROR` เต็มจอ ข้อความสำคัญคือ
+`odoo.tools.convert.ParseError: while parsing
+file:.../security/telematics_security.xml:50 โดเมนไม่ถูกต้อง:
+'fleet.telematics.incentive'` — module ติดตั้ง/อัปเกรดไม่สำเร็จเลย
+
+**สาเหตุ:** field `driver_user_id` บน `fleet.telematics.incentive` เดิม
+เป็น `related='driver_id.user_id', store=True` (related field ผ่าน
+`hr.employee.user_id`) — บน Odoo 19 ของผู้ใช้คนนี้ related field แบบ
+dotted-path ผ่าน `hr.employee` ดันไม่ resolve ได้เสถียรตอนโหลด data file
+(`ir.rule`) ที่อ้างอิง field นี้ในเงื่อนไข domain ทำให้ Odoo validate
+domain ไม่ผ่านตั้งแต่ตอน parse XML เลย — โมดูลเลยติดตั้งไม่สำเร็จทั้งโมดูล
+(ไม่ใช่แค่ rule เดียว เพราะ ParseError หยุด load_modules ทั้ง process)
+
+น่าจะเป็นปัญหาตระกูลเดียวกับที่เจอเรื่อง `hr.version` (Odoo 19) แทนที่
+`hr.contract` ใน `_apply_backend_bonus()` — คือ Odoo 19 ปรับโครงสร้าง HR
+module ไปพอสมควร ทำให้ pattern เดิมที่เคยใช้ได้กับ Odoo เวอร์ชันก่อนหน้า
+มีปัญหาบนเวอร์ชันนี้
+
+**วิธีแก้:** เลิกใช้ `related=` ไปเลย เปลี่ยน `driver_user_id` เป็น field
+ธรรมดา (`store=True` แต่ไม่ใช่ related) แล้วจัดการ sync ค่าเอง (จาก
+`driver_id.user_id` ที่ browse ตรงๆ ใน Python) ผ่าน `create()`/`write()`
+override แทน — field ธรรมดาแบบนี้ไม่ผ่านกลไก related-field-resolution
+ของ Odoo ที่มีปัญหา ir.rule เลยโหลดผ่านปกติ พฤติกรรมที่ผู้ใช้เห็นเหมือนเดิม
+ทุกอย่าง (driver เห็นแค่โบนัสของตัวเอง) แค่เปลี่ยนกลไกภายในเท่านั้น
+
+## 16. ✅ ทำแล้ว — Tier เปลี่ยนจาก 4 ระดับตายตัว (A/B/C/D) เป็นไดนามิก
+ตาม FDD §12.3 ที่ระบุว่า "Admin กำหนดเป็น Many2many ใน config ให้ Admin
+เพิ่ม/ลบ tier เองได้" (ก่อนหน้านี้เคยเป็นแค่ 8 field ตายตัว เพิ่ม/ลด
+จำนวน tier ไม่ได้เลยถ้าไม่แก้โค้ด — บันทึกไว้เป็นข้อ ⚠️ ในเอกสารรอบตรวจ
+สอบก่อนหน้านี้)
+
+**สิ่งที่เปลี่ยน:**
+- โมเดลใหม่ `fleet.telematics.scoring.tier` (name, min_score, bonus_pct,
+  scoring_config_id) — ล็อกแก้ไข/ลบไม่ได้เองถ้า config แม่ Active อยู่
+  (เหมือน field อื่นบน Scoring Config)
+- `fleet.telematics.scoring.config.tier_ids` (One2many) แทนที่
+  `tier_a_min_score`...`tier_d_bonus_pct` (8 field เดิม) — สร้าง config
+  ใหม่จะได้ default 3 แถว A(90/10%)/B(75/5%)/C(60/0%) ให้อัตโนมัติ
+  เหมือนพฤติกรรมเดิม ไม่ต้องตั้งเองใหม่หมด
+- `_local_tier_from_score()` (telematics_incentive.py) และ
+  `_compute_tier()` (telematics_log.py) เปลี่ยนมา loop ผ่าน tier_ids
+  เรียงจาก min_score มากไปน้อย แทนเทียบทีละ field — ถ้าคะแนนต่ำกว่า tier
+  ต่ำสุดที่ตั้งไว้ทั้งหมด ผลลัพธ์คือ `"Below Minimum"` (ไม่ใช่ `"D"` ตายตัว
+  อีกต่อไป เพราะไม่รู้ว่า tier ไหนคือ "ต่ำสุด" ตามชื่อได้แล้ว ต้องดูจาก
+  min_score เท่านั้น)
+
+**⚠️ ผลกระทบที่ต้องรู้ (breaking changes):**
+1. **`incentive_tier`** (บน `fleet.telematics.incentive`) และ **`tier`**
+   (บน `fleet.telematics.log`) เปลี่ยนจาก `Selection` (จำกัดแค่ A/B/C/D)
+   เป็น **`Char`** — เพราะ Selection field เขียนค่านอก list ตัวเลือกไม่ได้
+   เลย จะพังทันทีถ้า Admin ตั้งชื่อ Tier เป็นอย่างอื่นที่ไม่ใช่ A/B/C/D
+2. **"แจ้งเตือน HR เมื่อ Tier D"** เปลี่ยนเงื่อนไขจากเช็คชื่อ tier ตรงๆ
+   (`incentive_tier == 'D'`) เป็นเช็ค **`bonus_pct <= 0`** แทน — ตรงกับ
+   ความหมายทางธุรกิจจริงๆ ("ไม่ได้โบนัส") ไม่ขึ้นกับชื่อ tier
+3. **`_build_config_payload()`** (ส่งไป Backend ตอนกด Push Config)
+   เปลี่ยนจาก 8 key แบน (`tier_a_min_score`, `tier_a_bonus_pct`, ...) เป็น
+   **key เดียว `"tiers"` ที่เป็น list** ของ `{name, min_score, bonus_pct}`
+   — **ต้องอัปเดตฝั่ง Backend ให้อ่านฟอร์แมตใหม่นี้ด้วย** ไม่งั้น Backend
+   จะอ่าน Tier จาก Config ที่ Push ไปไม่ได้เลย (คนละ repo ที่ผมไม่ได้แก้ให้)
+4. **หน้า List ของ Scoring Config** ไม่โชว์ Tier เป็นคอลัมน์แยกได้อีกแล้ว
+   (เพราะไม่มีจำนวนคอลัมน์คงที่) — เพิ่ม field คำนวณ `tier_summary` แสดง
+   สรุปเป็นข้อความแทน เช่น `"A≥90 / B≥75 / C≥60"`
+5. **สีป้าย Tier ใน `driver_score_report.xml`** (PDF Monthly Score Report)
+   ยัง hardcode สีไว้แค่ 3 สีสำหรับชื่อ A/B/C — ถ้า Admin ตั้งชื่อ Tier อื่น
+   จะได้สีแดง (fallback) เสมอ เป็นข้อจำกัดเชิง cosmetic เท่านั้น ไม่กระทบ
+   ตัวเลข ยังไม่ได้ทำให้ไดนามิกเต็มรูปแบบ — ทำได้ถ้าต้องการ แต่ต้องคิด
+   scheme สีแบบไดนามิกใหม่ (เช่นไล่สีตามลำดับ เหมือนที่ทำใน
+   `driver_dashboard.js` แล้ว)
+6. **`static/src/js/driver_dashboard.js`** ก็เคย hardcode field เดิมไว้
+   เหมือนกัน (เจอพร้อมกับตอนแก้ครั้งนี้ ไม่ใช่จุดใหม่ที่เพิ่งพัง) แก้ไป
+   พร้อมกันแล้ว — ใช้ RPC 2 รอบ (ดึง tier_ids ก่อน แล้วดึงรายละเอียด tier
+   แต่ละอันอีกที) และไล่สีตามลำดับ (index) แทนชื่อ tier ตรงๆ
+
+**สิ่งที่ยังไม่ได้ทำ (นอกขอบเขตของรอบแก้นี้):**
+- Backend repo (`assada07/telematics-odoo`) ยังไม่ได้อัปเดตให้อ่าน
+  payload รูปแบบใหม่ — Config เก่าที่เคย Push ไปแล้วด้วยฟอร์แมตเดิมจะยัง
+  ใช้งานได้ปกติจนกว่าจะ Push ใหม่อีกครั้ง แต่ Push ครั้งถัดไปจะพังถ้า
+  Backend ยังอ่านฟอร์แมตเดิมอยู่
+- สีป้าย Tier ใน PDF report ยังไม่ไดนามิกเต็มรูปแบบ (ข้อ 5 ด้านบน)

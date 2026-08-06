@@ -40,13 +40,25 @@ class TelematicsIncentive(models.Model):
 
     driver_id = fields.Many2one(
         'hr.employee', string='Driver', required=True)
-    # field แบบ related+store แบบ flat ระดับเดียว ใช้เฉพาะสำหรับ record rule
+    # field แบบ flat ระดับเดียว ใช้เฉพาะสำหรับ record rule
     # (security/telematics_security.xml) — Odoo ตรวจ domain แบบ dotted-path
     # หลายชั้นในบางกรณีมีปัญหา ใช้ field ตรงนี้ตัดปัญหาไปเลย ไม่ต้องแสดงในฟอร์ม
+    #
+    # แก้บั๊ก 2026-08-04: เดิมใช้ related='driver_id.user_id', store=True
+    # ตรงๆ แต่พัง parse ตอน upgrade บน Odoo 19 (ParseError: โดเมนไม่ถูกต้อง
+    # ตอนโหลด ir.rule ใน telematics_security.xml) น่าจะเพราะ Odoo 19 มีการ
+    # ปรับโครงสร้าง HR module (ดู hr.version vs hr.contract ใน
+    # _apply_backend_bonus() ด้านล่าง เป็นปัญหาตระกูลเดียวกัน) ทำให้ related
+    # field แบบ dotted-path ผ่าน hr.employee ไม่เสถียรพอจะ resolve ได้ตอน
+    # โหลด data file — เปลี่ยนมาเป็น field ธรรมดา (ไม่ใช้ related=) แล้ว
+    # จัดการ sync ค่าเองใน create()/write() แทน ตัดปัญหาเรื่อง related-field
+    # resolution ตอน module load ไปเลย
     driver_user_id = fields.Many2one(
         'res.users', string='Driver User (internal)',
-        related='driver_id.user_id', store=True, readonly=True,
-        help='ใช้ภายในสำหรับ record rule เท่านั้น — ไม่ต้องแสดงในฟอร์ม')
+        store=True, readonly=True, copy=False,
+        help='ใช้ภายในสำหรับ record rule เท่านั้น — ไม่ต้องแสดงในฟอร์ม '
+             '(sync ค่าจาก driver_id.user_id เองใน create()/write() '
+             'ไม่ใช้ related= เพื่อกัน ir.rule parse error ตอน upgrade)')
     scoring_config_id = fields.Many2one(
         'fleet.telematics.scoring.config',
         string='Scoring Config (snapshot)',
@@ -92,12 +104,11 @@ class TelematicsIncentive(models.Model):
     # bonus_pct/incentive_tier ดึงจาก Backend ผ่าน _apply_backend_bonus()
     # (ตอนสร้างจาก cron หรือกดปุ่ม "Refresh from Backend" เอง) ไม่ใช่ compute
     # field อัตโนมัติเพราะต้องเรียก API ภายนอก
-    incentive_tier = fields.Selection([
-        ('A', 'A — Excellent'),
-        ('B', 'B — Good'),
-        ('C', 'C — Fair'),
-        ('D', 'D — Needs Improvement'),
-    ], string='Tier', default='D', readonly=True)
+    # แก้ 2026-08-04: เปลี่ยนจาก Selection (A/B/C/D ตายตัว) เป็น Char เพราะ
+    # Tier ฝั่ง Scoring Config เปลี่ยนเป็นไดนามิกแล้ว (Admin ตั้งชื่อ Tier
+    # เองได้ ไม่ใช่แค่ A/B/C/D อีกต่อไป) — Selection field เขียนค่าที่ไม่อยู่
+    # ใน list ตัวเลือกไม่ได้เลย จะพังทันทีถ้า Admin ตั้งชื่อ Tier เป็นอย่างอื่น
+    incentive_tier = fields.Char(string='Tier', default='Below Minimum', readonly=True)
     bonus_pct    = fields.Float(string='Bonus %',      digits=(5, 2),  default=0.0, readonly=True)
     # readonly คุมที่ระดับ View (readonly="is_locked") ไม่ใช่ hardcode ใน
     # Python — แก้ไขได้เฉพาะตอน state=Draft เท่านั้น
@@ -211,6 +222,19 @@ class TelematicsIncentive(models.Model):
         if no_driver:
             raise UserError('กรุณาเลือก Driver ก่อน ถึงจะคำนวณโบนัสได้')
 
+        # แก้บั๊ก 2026-08-04: total_trips/avg_score/total_distance_km ฯลฯ
+        # เป็น stored computed field ที่ผูก @api.depends('driver_id',
+        # 'date_from', 'date_to') เท่านั้น — คำนวณครั้งเดียวตอนสร้าง record
+        # (ปกติมาจาก cron รายเดือน) แล้วไม่มีวัน recompute อัตโนมัติอีกเลย
+        # แม้จะมีทริปใหม่ของพนักงานคนนั้น sync เข้ามาเพิ่มทีหลังก็ตาม เพราะ
+        # dependency ไม่ได้ผูกกับ record ใน fleet.telematics.log โดยตรง
+        # (เป็นแค่ search() ข้าม model) ผลคือถ้าสร้างใบโบนัสตอนที่ทริปยังไม่
+        # sync (เช่นตอน Backend มีปัญหา) จำนวนทริปจะค้างเป็น 0 ตลอดไป แม้
+        # ทริปจะ sync สำเร็จภายหลังแล้วก็ตาม — เรียก _compute_incentive()
+        # ซ้ำตรงนี้ทุกครั้งที่คำนวณ/รีเฟรชโบนัส (draft เท่านั้น ตามปุ่มที่
+        # เรียก method นี้ทั้งหมด) เพื่อให้ตัวเลขสดใหม่เสมอก่อนจะ Confirm
+        self._compute_incentive()
+
         Config = self.env['fleet.telematics.config']
         api_url = Config.get_active_api_url()
         api_key = Config.get_active_api_key()
@@ -299,10 +323,17 @@ class TelematicsIncentive(models.Model):
                     'bonus_last_synced': fields.Datetime.now(),
                 })
 
-            # Tier D ต้องแจ้งเตือน HR ด้วย ไม่ใช่แค่ตั้ง bonus_pct=0 เฉยๆ —
-            # ครอบด้วย try/except เพราะเป็นฟีเจอร์เสริม ไม่ควรทำให้การคำนวณ
-            # โบนัสหลัก (สำคัญกว่า) พังไปด้วยถ้าระบบแจ้งเตือนมีปัญหา
-            if rec.incentive_tier == 'D':
+            # แจ้งเตือน HR เมื่อพนักงานไม่ได้โบนัสเลย (bonus_pct == 0) ไม่ใช่
+            # แค่ตั้งค่าไว้เฉยๆ — ครอบด้วย try/except เพราะเป็นฟีเจอร์เสริม
+            # ไม่ควรทำให้การคำนวณโบนัสหลัก (สำคัญกว่า) พังไปด้วยถ้าระบบแจ้ง
+            # เตือนมีปัญหา
+            #
+            # แก้ 2026-08-04: เดิมเช็ค `incentive_tier == 'D'` ตรงๆ ซึ่งพังทันที
+            # ที่ Tier เปลี่ยนเป็นไดนามิก (Admin อาจตั้งชื่อ Tier ต่ำสุดเป็น
+            # อย่างอื่นที่ไม่ใช่ "D" เลยก็ได้) เปลี่ยนมาเช็คจาก bonus_pct <= 0
+            # แทน ตรงกับความหมายทางธุรกิจจริงๆ ของฟีเจอร์นี้อยู่แล้ว (คือ
+            # "แจ้งเตือนตอนไม่ได้โบนัส" ไม่ใช่ "แจ้งเตือนตอนได้ตัวอักษร D")
+            if rec.bonus_pct <= 0:
                 try:
                     rec._notify_hr_tier_d()
                 except Exception:
@@ -312,32 +343,43 @@ class TelematicsIncentive(models.Model):
                     )
 
     def _local_tier_from_score(self, return_pct=False):
-        """คำนวณ Tier สำรองในเครื่องจาก threshold ของ Scoring Config —
+        """คำนวณ Tier สำรองในเครื่องจาก tier_ids ของ Scoring Config —
         ใช้เฉพาะตอนเรียก Backend ไม่สำเร็จเท่านั้น
 
-        แก้บั๊ก 2026-08-03: เดิมถ้าไม่มี Scoring Config ที่ Active อยู่เลย
-        (cfg เป็น empty recordset/falsy) เงื่อนไข `cfg and avg_score >= ...`
-        จะเป็น False ทุกเส้นเสมอ ตกไป else จนได้ Tier D เสมอไม่ว่า avg_score
-        จะสูงแค่ไหนก็ตาม — ตอนนี้ถ้าไม่มี config active ให้ fallback ไปใช้
-        threshold ค่าเริ่มต้นมาตรฐาน (A=90/B=75/C=60 ตรงกับ default field
-        ของ Scoring Config เอง) แทนที่จะบังคับเป็น D เสมอ"""
+        แก้ 2026-08-04: Tier เปลี่ยนเป็นไดนามิกแล้ว (tier_ids แทน 4 field
+        ตายตัว A/B/C/D) — เรียง tier_ids จาก min_score มากไปน้อย แล้วเลือก
+        Tier แรกที่ avg_score ≥ min_score ถ้าไม่มี tier ไหนตั้งไว้เลย (หรือ
+        ไม่มี Scoring Config Active) fallback ไปใช้ threshold มาตรฐาน
+        (A=90/B=75/C=60) เหมือนพฤติกรรมเดิม — ถ้าคะแนนต่ำกว่า tier ต่ำสุดที่
+        ตั้งไว้ทั้งหมด (หรือต่ำกว่า C ในกรณี fallback) ถือเป็น "Below
+        Minimum" (แก้บั๊ก 2026-08-03 เดิม: ไม่มี config active ไม่ควรบังคับ
+        เป็น D เสมอ — ตอนนี้ยังคงพฤติกรรมนั้นไว้ในเส้นทาง fallback)"""
         self.ensure_one()
         cfg = self.scoring_config_id or self.env['fleet.telematics.scoring.config'].search(
             [('is_active', '=', True)], limit=1)
-        tier_a_min = cfg.tier_a_min_score if cfg else 90.0
-        tier_b_min = cfg.tier_b_min_score if cfg else 75.0
-        tier_c_min = cfg.tier_c_min_score if cfg else 60.0
-        if self.avg_score >= tier_a_min:
-            tier, pct = 'A', (cfg.tier_a_bonus_pct if cfg else 10.0)
-        elif self.avg_score >= tier_b_min:
-            tier, pct = 'B', (cfg.tier_b_bonus_pct if cfg else 5.0)
-        elif self.avg_score >= tier_c_min:
-            tier, pct = 'C', (cfg.tier_c_bonus_pct if cfg else 0.0)
+
+        tiers = cfg.tier_ids.sorted(key=lambda t: t.min_score, reverse=True) if cfg else \
+            self.env['fleet.telematics.scoring.tier']
+
+        if tiers:
+            for t in tiers:
+                if self.avg_score >= t.min_score:
+                    tier, pct = t.name, t.bonus_pct
+                    break
+            else:
+                tier, pct = 'Below Minimum', 0.0
         else:
-            # ใช้ tier_d_bonus_pct จาก config ถ้ามี (ให้ตรงกับที่ Admin ตั้งไว้
-            # ในหน้าจอ) ไม่ hardcode 0.0 ตรงๆ — เผื่อ Admin ปรับ Tier D ให้
-            # ได้โบนัสบางส่วนแทนที่จะเป็น 0% เสมอ
-            tier, pct = 'D', (cfg.tier_d_bonus_pct if cfg else 0.0)
+            # ไม่มี Scoring Config Active หรือ config นั้นไม่มี tier ตั้งไว้
+            # เลย → fallback เป็น threshold มาตรฐาน (เหมือนพฤติกรรมเดิม
+            # ก่อนเปลี่ยนเป็นไดนามิก)
+            if self.avg_score >= 90.0:
+                tier, pct = 'A', 10.0
+            elif self.avg_score >= 75.0:
+                tier, pct = 'B', 5.0
+            elif self.avg_score >= 60.0:
+                tier, pct = 'C', 0.0
+            else:
+                tier, pct = 'D', 0.0
         return (tier, pct) if return_pct else tier
 
     def _notify_hr_tier_d(self):
@@ -482,6 +524,15 @@ class TelematicsIncentive(models.Model):
         'bonus_source', 'bonus_last_synced',
     }
 
+    def create(self, vals_list):
+        if isinstance(vals_list, dict):
+            vals_list = [vals_list]
+        for vals in vals_list:
+            if vals.get('driver_id') and not vals.get('driver_user_id'):
+                employee = self.env['hr.employee'].browse(vals['driver_id'])
+                vals['driver_user_id'] = employee.user_id.id or False
+        return super().create(vals_list)
+
     def write(self, vals):
         touched = self._LOCKED_INCENTIVE_FIELDS.intersection(vals.keys())
         if touched:
@@ -492,6 +543,10 @@ class TelematicsIncentive(models.Model):
                         'แก้ไขข้อมูลผลงาน/โบนัสไม่ได้อีก เพื่อความโปร่งใส\n\n'
                         'ถ้าต้องการแก้ไข: กด "Reset" กลับเป็น Draft ก่อน'
                     )
+        # sync driver_user_id เองทุกครั้งที่ driver_id เปลี่ยน (แทน related=)
+        if 'driver_id' in vals and 'driver_user_id' not in vals:
+            employee = self.env['hr.employee'].browse(vals['driver_id']) if vals['driver_id'] else False
+            vals = dict(vals, driver_user_id=(employee.user_id.id if employee else False))
         return super().write(vals)
 
     def action_export_to_appraisal(self):

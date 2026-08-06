@@ -80,12 +80,11 @@ class TelematicsLog(models.Model):
     # Active อยู่ตอนนี้ (ใช้ logic เดียวกับ _local_tier_from_score() ใน
     # telematics_incentive.py เพื่อให้ผลตรงกัน) — เป็น store=True เพื่อให้
     # ใช้ filter/group by ในหน้า List ได้จริง
-    tier = fields.Selection([
-        ('A', 'A — Excellent'),
-        ('B', 'B — Good'),
-        ('C', 'C — Fair'),
-        ('D', 'D — Needs Improvement'),
-    ], string='Tier', compute='_compute_tier', store=True)
+    #
+    # แก้ 2026-08-04: เปลี่ยนจาก Selection (A/B/C/D ตายตัว) เป็น Char เพราะ
+    # Tier ฝั่ง Scoring Config เปลี่ยนเป็นไดนามิกแล้ว (Admin ตั้งชื่อ Tier
+    # เองได้ ไม่ใช่แค่ A/B/C/D อีกต่อไป)
+    tier = fields.Char(string='Tier', compute='_compute_tier', store=True)
 
     @api.depends('driver_score')
     def _compute_tier(self):
@@ -96,22 +95,38 @@ class TelematicsLog(models.Model):
         _local_tier_from_score() ของ telematics_incentive.py) ตอนนี้ถ้าไม่มี
         config active ให้ fallback ไปใช้ threshold ค่าเริ่มต้นมาตรฐาน
         (A=90/B=75/C=60 ตรงกับ default field ของ Scoring Config เอง) แทนที่
-        จะบังคับเป็น D เสมอ"""
+        จะบังคับเป็น D เสมอ
+
+        แก้ 2026-08-04: Tier เปลี่ยนเป็นไดนามิกแล้ว (tier_ids แทน 4 field
+        ตายตัว A/B/C/D) — loop ผ่าน tier_ids เรียงจาก min_score มากไปน้อย
+        แทนเทียบทีละ field แบบเดิม"""
         Config = self.env['fleet.telematics.scoring.config']
         cfg = Config.search([('is_active', '=', True)], limit=1)
-        tier_a_min = cfg.tier_a_min_score if cfg else 90.0
-        tier_b_min = cfg.tier_b_min_score if cfg else 75.0
-        tier_c_min = cfg.tier_c_min_score if cfg else 60.0
+        tiers = cfg.tier_ids.sorted(key=lambda t: t.min_score, reverse=True) if cfg else \
+            self.env['fleet.telematics.scoring.tier']
+
         for rec in self:
             score = rec.driver_score or 0.0
-            if score >= tier_a_min:
-                rec.tier = 'A'
-            elif score >= tier_b_min:
-                rec.tier = 'B'
-            elif score >= tier_c_min:
-                rec.tier = 'C'
+            if tiers:
+                matched = False
+                for t in tiers:
+                    if score >= t.min_score:
+                        rec.tier = t.name
+                        matched = True
+                        break
+                if not matched:
+                    rec.tier = 'Below Minimum'
             else:
-                rec.tier = 'D'
+                # ไม่มี Scoring Config Active หรือไม่มี tier ตั้งไว้เลย →
+                # fallback เป็น threshold มาตรฐาน (เหมือนพฤติกรรมเดิม)
+                if score >= 90.0:
+                    rec.tier = 'A'
+                elif score >= 75.0:
+                    rec.tier = 'B'
+                elif score >= 60.0:
+                    rec.tier = 'C'
+                else:
+                    rec.tier = 'D'
 
     gps_track_json   = fields.Text(string='GPS Track (JSON)',
         help='เก็บ GPS track ทั้งสาย เช่น [{"lat": 18.7883, "lon": 98.9853, "ts": "..."}]')
@@ -576,6 +591,26 @@ class TelematicsLog(models.Model):
         gps_track = data.get('gps_track') or data.get('gps_points') or []
 
         import json as _json
+
+        # แก้บั๊ก 2026-08-05: เจอจริงจาก production ว่า Backend บางครั้งส่ง
+        # gps_track กลับมาเป็น "string ที่มี JSON อยู่ข้างใน" แทนที่จะเป็น
+        # JSON array ตรงๆ ในตัว response (เช่น field เก็บเป็น JSON column
+        # แล้ว backend ส่งค่า raw ออกมาโดยไม่แกะให้) — ถ้าปล่อยผ่านตรงๆ
+        # แล้วเอาไป _json.dumps() ซ้ำ จะกลายเป็น double-encoded (string ซ้อน
+        # string) ทำให้ฝั่ง JS (trip_map_widget.js) JSON.parse() รอบเดียว
+        # แล้วได้ string กลับมาแทน array จริง (แผนที่เลยไม่ขึ้น) — เช็คก่อน
+        # ว่าเป็น string ไหม ถ้าใช่ให้ decode ออกมาเป็น list จริงก่อน
+        if isinstance(gps_track, str):
+            try:
+                gps_track = _json.loads(gps_track)
+            except (ValueError, TypeError):
+                _logger.warning(
+                    'action_load_trip_detail: gps_track จาก Backend เป็น string '
+                    'ที่ decode เป็น JSON ไม่ได้ (trip_id=%s) — เก็บเป็น list ว่างแทน',
+                    self.external_trip_id,
+                )
+                gps_track = []
+
         self.write({'gps_track_json': _json.dumps(gps_track, ensure_ascii=False)})
 
         return {
@@ -585,6 +620,15 @@ class TelematicsLog(models.Model):
                 'title':   'โหลด GPS Track สำเร็จ',
                 'message': f'ได้รับ {len(gps_track)} จุด GPS จาก Backend',
                 'type':    'success',
+                # แก้บั๊กแพทเทิร์นเดียวกับที่เคยเจอใน Approve/Deactivate/Push
+                # Config (Scoring Config): display_notification เฉยๆ ไม่ทำให้
+                # ฟอร์มรีเฟรชค่าฟิลด์ให้อัตโนมัติ — gps_track_json ถูกบันทึก
+                # ลงฐานข้อมูลถูกต้องแล้วจริง (เห็นจากข้อความแจ้งเตือนที่บอก
+                # จำนวนจุด GPS ถูกต้อง) แต่ widget แผนที่บนหน้าจอยังอ้างอิง
+                # ค่าเก่า (ว่าง) อยู่ เพราะฟอร์มไม่รีโหลด เลยไม่เห็นแผนที่ขึ้น
+                # ทั้งที่ข้อมูลมาแล้วจริง — เพิ่ม next: soft_reload ให้รีโหลด
+                # ฟอร์มทันทีหลังขึ้นแจ้งเตือน แผนที่จะโผล่ให้เห็นทันที
+                'next': {'type': 'ir.actions.client', 'tag': 'soft_reload'},
             },
         }
 

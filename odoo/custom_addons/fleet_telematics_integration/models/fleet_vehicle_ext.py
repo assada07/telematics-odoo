@@ -456,11 +456,22 @@ class FleetVehicleExt(models.Model):
             + (f'  |  อัปเดตล่าสุด (Backend): {last_update}' if last_update else '')
         )
 
-        self.write({
+        vals = {
             'device_verified_at':     fields.Datetime.now(),
             'device_verify_mismatch': mismatch,
             'device_verify_note':     note,
-        })
+        }
+        # แก้บั๊ก 2026-08-03: เดิม telematics_register_status ตั้งได้แค่จาก
+        # action_register_device() เท่านั้น — ถ้า Device เคยลงทะเบียนไปแล้ว
+        # ตอนแรก (409 Conflict) แล้วมาผูกรถใหม่ผ่าน action_sync_to_backend()
+        # แทน (ปุ่ม "ส่งรถและบอร์ดไป Backend") สถานะจะค้างเป็น "ยังไม่
+        # ลงทะเบียน" ตลอดไป ทั้งที่ Backend ยืนยันแล้วว่า Device ผูกกับรถคันนี้
+        # ถูกต้องจริง (mismatch=False) — ตอนนี้ถ้า verify ผ่านแล้วไม่ mismatch
+        # ให้ถือว่า "ลงทะเบียนสำเร็จ" ไปด้วยเลย ไม่ต้องรอ action_register_device()
+        # อย่างเดียวอีกต่อไป
+        if not mismatch:
+            vals['telematics_register_status'] = 'registered'
+        self.write(vals)
 
         _logger.info(
             'action_verify_device: vehicle_id=%s odoo=%s backend=%s mismatch=%s',

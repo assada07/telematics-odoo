@@ -248,6 +248,18 @@
         <field name="search_view_id" ref="view_telematics_log_search"/>
     </record>
 
+    <!-- แก้ 2026-08-05 (รอบ 2): "Trip Detail" (Form + Map(Leaflet) + Event
+         list ตาม FDD §12.6) ไม่ใช่ปลายทางเมนูแยกต่างหาก — เป็น view คู่กับ
+         "Trip Log List" เสมอ (คลิกแถวไหนใน Trip List ก็เปิด Trip Detail
+         ให้เองอัตโนมัติอยู่แล้ว ตามมาตรฐาน List→Form ของ Odoo) ลองทำเป็น
+         action แยก (view_mode="form,list") ไปก่อนหน้านี้แล้วพัง — Odoo ไม่
+         รองรับการเปิด Form ตรงๆ แบบไม่มี record ID กำกับ กลายเป็นฟอร์ม
+         เปล่าๆ แทนที่จะเป็นทริปจริง จึงเอา action นั้นออกแล้ว ไม่ต้องมีเมนู
+         แยกสำหรับ Trip Detail อีก — action_telematics_log (Trip List) ด้าน
+         บนนี้แหละคือทางเข้าถึง Trip Detail ที่ถูกต้องอยู่แล้ว -->
+
+    <!-- Trip Analytics (Pivot/Graph) — ไม่ผูกกับเมนูแล้ว ไม่มีใน FDD §12.6
+         เก็บ action ไว้เผื่ออยากเอากลับมาใช้ภายหลัง -->
     <record id="action_telematics_analytics" model="ir.actions.act_window">
         <field name="name">Trip Analytics</field>
         <field name="res_model">fleet.telematics.log</field>

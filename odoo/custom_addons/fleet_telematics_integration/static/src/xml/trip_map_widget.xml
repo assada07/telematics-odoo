@@ -17,9 +17,7 @@
                 <span class="ms-2">
                     <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#ef4444;vertical-align:middle"/> สิ้นสุด
                 </span>
-                <span class="ms-2">
-                    <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#f97316;vertical-align:middle"/> Harsh Event
-                </span>
+                <span class="ms-3">🚗 = เหตุการณ์เสี่ยง (สีต่างกันตามประเภท, ชี้ที่หมุดดูชื่อเหตุการณ์ได้เลย)</span>
             </div>
             <div t-ref="tripMapContainer" style="height:400px;border:1px solid #dee2e6;border-radius:4px;"/>
         </div>

@@ -27,8 +27,8 @@
                 <field name="zone_label"        optional="show"/>
                 <field name="speed_limit_kmh"   optional="show"/>
                 <field name="is_over_speed_limit" optional="show" widget="boolean_toggle" readonly="1"/>
-                <field name="lat"         optional="hide"/>
-                <field name="lon"         optional="hide"/>
+                <field name="lat"         optional="show"/>
+                <field name="lon"         optional="show"/>
                 <field name="description" optional="hide"/>
             </list>
         </field>
@@ -101,6 +101,15 @@
                         domain="[('is_over_speed_limit','=',True)]"/>
                 <filter name="today" string="Today"
                         domain="[('occurred_at','&gt;=', context_today().strftime('%Y-%m-%d 00:00:00'))]"/>
+                <!-- เพิ่ม Date Range filter สำเร็จรูป (แก้ตามที่ผู้ใช้ขอ
+                     2026-08-04) — เดิมมีแค่ปุ่ม "Today" ปุ่มเดียว ถ้าจะดู
+                     ย้อนหลังช่วงที่กำหนดเองต้องไปเปิด Custom Filter เอง
+                     ทุกครั้ง filter="date" ของ Odoo ให้ preset สำเร็จรูป
+                     (Today/This Week/This Month/This Quarter/This Year)
+                     พร้อมตัวเลือก Custom Range ในตัวอยู่แล้ว -->
+                <filter name="occurred_at_range" string="ช่วงวันที่ (Occurred At)"
+                        date="occurred_at"/>
+                <separator/>
                 <group>
                     <!-- ข้อ 3: Group By ตามที่ผู้ตรวจงานต้องการ -->
                     <filter name="group_driver"     string="Driver"     context="{'group_by': 'driver_id'}"/>

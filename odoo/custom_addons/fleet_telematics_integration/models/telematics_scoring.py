@@ -47,6 +47,38 @@ class TelematicsScoringConfig(models.Model):
     idling_deduct       = fields.Float(string='Idling Deduct',       default=2.0)
     bump_deduct         = fields.Float(string='Bump Deduct',         default=4.0)
 
+    # เพิ่มตามที่ผู้ใช้ขอ: Live Formula Preview — โชว์สูตรคำนวณคะแนนสดๆ
+    # ตามค่าที่กำลังกรอกอยู่ในฟอร์ม โดยไม่ต้อง save ก่อน (field นี้ตั้งใจ
+    # ไม่ store=True เพื่อให้ Odoo คำนวณใหม่ให้อัตโนมัติทุกครั้งที่ field ใน
+    # @api.depends เปลี่ยนค่าในฟอร์ม แม้ยังไม่ได้กด save — เป็นพฤติกรรม
+    # มาตรฐานของ non-stored compute field ในหน้าฟอร์ม Odoo อยู่แล้ว ไม่ต้อง
+    # เขียน JS widget เพิ่มเอง)
+    formula_preview = fields.Html(
+        string='สูตรคำนวณคะแนน (Live Preview)',
+        compute='_compute_formula_preview', sanitize=False)
+
+    @api.depends('score_base', 'max_deduct_per_trip',
+                 'harsh_brake_deduct', 'harsh_accel_deduct', 'harsh_corner_deduct',
+                 'speeding_deduct', 'idling_deduct', 'bump_deduct')
+    def _compute_formula_preview(self):
+        for rec in self:
+            fmt = lambda v: f'{v:g}'  # ตัด .0 ท้ายตัวเลขที่ไม่จำเป็นออก อ่านง่ายขึ้น
+            rec.formula_preview = f'''
+                <div style="font-family:monospace; font-size:13px; line-height:1.9; padding:8px 12px; background:#f8f9fa; border-radius:6px; border:1px solid #dee2e6;">
+                    <b>Score</b> = {fmt(rec.score_base)}
+                    − (Brake × <span style="color:#ef4444">{fmt(rec.harsh_brake_deduct)}</span>)
+                    − (Accel × <span style="color:#f97316">{fmt(rec.harsh_accel_deduct)}</span>)
+                    − (Corner × <span style="color:#f59e0b">{fmt(rec.harsh_corner_deduct)}</span>)
+                    − (Speeding × <span style="color:#8b5cf6">{fmt(rec.speeding_deduct)}</span>)
+                    − (Idling × <span style="color:#0ea5e9">{fmt(rec.idling_deduct)}</span>)
+                    − (Bump × <span style="color:#64748b">{fmt(rec.bump_deduct)}</span>)
+                    <br/>
+                    <span class="text-muted">หักได้สูงสุด {fmt(rec.max_deduct_per_trip)} คะแนน/ทริป
+                    (ต่อให้พฤติกรรมเสี่ยงรวมกันหักเกินนี้ คะแนนก็จะไม่ต่ำกว่า
+                    {fmt(max(rec.score_base - rec.max_deduct_per_trip, 0))})</span>
+                </div>
+            '''
+
     # ── เกณฑ์ตัดสินว่าเป็นพฤติกรรมเสี่ยงหรือไม่ ──────────────────────────
     harsh_brake_g      = fields.Float(string='Brake G Threshold',         default=0.40)
     harsh_accel_g      = fields.Float(string='Accel G Threshold',         default=0.40)
@@ -67,27 +99,44 @@ class TelematicsScoringConfig(models.Model):
         help='ใช้กับ event ที่พิกัดอยู่นอกเขตกรุงเทพฯ')
 
     # ── เกณฑ์ Tier และ % โบนัส ────────────────────────────────────────────
-    tier_a_min_score = fields.Float(string='Tier A — Min Score', default=90.0)
-    tier_a_bonus_pct = fields.Float(string='Tier A — Bonus %',  default=10.0)
-    tier_b_min_score = fields.Float(string='Tier B — Min Score', default=75.0)
-    tier_b_bonus_pct = fields.Float(string='Tier B — Bonus %',  default=5.0)
-    tier_c_min_score = fields.Float(string='Tier C — Min Score', default=60.0)
-    tier_c_bonus_pct = fields.Float(string='Tier C — Bonus %',  default=0.0)
-    # เพิ่มตาม FDD §12.3 — ตาราง Tier ระบุว่า Admin ปรับ Tier D ได้เหมือน
-    # A/B/C ทุกประการ (เดิมโค้ด hardcode Tier D ไว้เป็น fallback ในลอจิก
-    # ไม่ใช่ field ที่ปรับได้จาก UI)
+    # แก้ตามที่ผู้ใช้ขอ 2026-08-04: เดิมเป็น 8 fields ตายตัว (tier_a...tier_d
+    # ×2 แต่ละอัน) ตั้งได้แค่ 4 ระดับ A/B/C/D เท่านั้น แก้จำนวน tier ไม่ได้
+    # เลยถ้าไม่แก้โค้ด — เปลี่ยนเป็น One2many แบบไดนามิก ให้ Admin เพิ่ม/ลบ/
+    # เปลี่ยนชื่อ Tier ได้เองจากหน้าจอ ตรงตาม FDD §12.3 ที่ระบุว่า "Admin
+    # กำหนดเป็น Many2many ใน config ให้ Admin เพิ่ม/ลบ tier เองได้"
     #
-    # tier_d_min_score: ปกติควรเป็น 0 เสมอ (นิยาม: คะแนนต่ำกว่า Tier C
-    # ทั้งหมดคือ D อยู่แล้ว) เก็บเป็น field ให้แก้ไขได้เพื่อความสอดคล้องกับ
-    # สเปคเท่านั้น — ไม่มีจุดไหนในโค้ดเทียบค่านี้จริง
-    #
-    # tier_d_bonus_pct: มีผลจริงทั้ง 2 เส้นทาง — (1) ถูกส่งไป Backend ผ่าน
-    # _build_config_payload() ให้ Backend ใช้คำนวณเมื่อเชื่อมต่อสำเร็จ และ
-    # (2) ถูกอ่านโดย telematics_incentive.py: _local_tier_from_score()
-    # เป็น fallback ตอนเรียก Backend ไม่สำเร็จด้วย (ปกติตั้งเป็น 0% ตาม FDD
-    # แต่ Admin ปรับเป็นค่าอื่นได้ถ้าต้องการ)
-    tier_d_min_score = fields.Float(string='Tier D — Min Score', default=0.0)
-    tier_d_bonus_pct = fields.Float(string='Tier D — Bonus %',  default=0.0)
+    # Default 3 แถวตอนสร้างใหม่ (A/B/C) ให้พฤติกรรมเดิมยังใช้ได้ทันทีโดยไม่
+    # ต้องตั้งค่าเองใหม่หมด — เข้ากันได้กับพฤติกรรมเดิมที่เคย hardcode ไว้
+    # (Tier ต่ำกว่าเกณฑ์ที่ตั้งไว้ทั้งหมด ถือเป็น "Below Minimum" เสมอ ดู
+    # _get_tier_for_score() ใน telematics_incentive.py/telematics_log.py)
+    def _default_tier_ids(self):
+        return [
+            (0, 0, {'name': 'A', 'min_score': 90.0, 'bonus_pct': 10.0}),
+            (0, 0, {'name': 'B', 'min_score': 75.0, 'bonus_pct': 5.0}),
+            (0, 0, {'name': 'C', 'min_score': 60.0, 'bonus_pct': 0.0}),
+        ]
+
+    tier_ids = fields.One2many(
+        'fleet.telematics.scoring.tier', 'scoring_config_id',
+        string='Tiers', default=_default_tier_ids,
+        help='กำหนด Tier ได้เอง เพิ่ม/ลบ/เปลี่ยนชื่อได้ตามต้องการ ไม่ต้องมี '
+             'แค่ 4 ระดับตายตัวอีกต่อไป — เรียงจาก Min Score มากไปน้อย '
+             'ระบบจะจัดพนักงานเข้า Tier แรกที่คะแนนเฉลี่ยของเขา ≥ Min Score')
+
+    # เพิ่ม 2026-08-04: สรุป Tier แบบข้อความสั้นๆ ไว้โชว์ในหน้า List — เดิม
+    # หน้า List เคยโชว์ tier_a_min_score/tier_b_min_score/tier_c_min_score
+    # เป็นคอลัมน์ตรงๆ ได้ แต่พอเปลี่ยนเป็น tier_ids (One2many) จะโชว์เป็น
+    # คอลัมน์แบบนั้นไม่ได้อีกแล้ว (ไม่มีจำนวนคอลัมน์คงที่) เลยสรุปเป็น
+    # ข้อความเดียวแทน เช่น "A≥90 / B≥75 / C≥60"
+    tier_summary = fields.Char(
+        string='Tiers', compute='_compute_tier_summary')
+
+    @api.depends('tier_ids.name', 'tier_ids.min_score')
+    def _compute_tier_summary(self):
+        for rec in self:
+            tiers = rec.tier_ids.sorted(key=lambda t: t.min_score, reverse=True)
+            rec.tier_summary = ' / '.join(
+                f'{t.name}≥{t.min_score:g}' for t in tiers) if tiers else '—'
 
     # ── History (readonly) — ตาม FDD §12.5: track ว่า config นี้ถูกใช้กับ
     # กี่ trip แล้ว ต่างจาก last_push_at/last_push_status ที่ track แค่การ
@@ -136,21 +185,28 @@ class TelematicsScoringConfig(models.Model):
                         'กรุณา deactivate config นั้นก่อน'
                     )
 
-    @api.constrains('tier_a_min_score', 'tier_b_min_score', 'tier_c_min_score')
-    def _check_tier_order(self):
-        """เกณฑ์คะแนนขั้นต่ำต้องเรียงจากมากไปน้อย A > B > C > 0 เสมอ
-        (Tier D คือทุกคะแนนที่ต่ำกว่า C ลงไป — tier_d_min_score เป็นแค่
-        field เก็บไว้ให้ Admin เห็น ไม่ได้ใช้เทียบในการจัด tier จริง)"""
+    @api.constrains('tier_ids')
+    def _check_tier_ids(self):
+        """เช็คความสมเหตุสมผลของ Tier แบบไดนามิก (แทนที่ constraint เดิม
+        ที่เช็ค tier_a > tier_b > tier_c > 0 แบบตายตัว):
+        - min_score ห้ามติดลบ
+        - bonus_pct ห้ามติดลบ
+        - ห้ามมี 2 tier ที่ min_score เท่ากันใน config เดียวกัน (จะเลือกไม่
+          ได้ว่าใครมาก่อน)"""
         for rec in self:
-            if not (rec.tier_a_min_score > rec.tier_b_min_score > rec.tier_c_min_score > 0):
-                raise ValidationError('Tier min score ต้องเรียงจากมากไปน้อย: A > B > C > 0')
-
-    @api.constrains('tier_d_bonus_pct')
-    def _check_tier_d_bonus_not_negative(self):
-        """% โบนัส Tier D ต้องไม่ติดลบ (ปกติ 0% ตาม FDD แต่ห้ามติดลบ)"""
-        for rec in self:
-            if rec.tier_d_bonus_pct < 0:
-                raise ValidationError('Tier D — Bonus % ต้องไม่ติดลบ')
+            seen_scores = set()
+            for tier in rec.tier_ids:
+                if tier.min_score < 0:
+                    raise ValidationError(
+                        f'Tier "{tier.name}": Min Score ต้องไม่ติดลบ')
+                if tier.bonus_pct < 0:
+                    raise ValidationError(
+                        f'Tier "{tier.name}": Bonus % ต้องไม่ติดลบ')
+                if tier.min_score in seen_scores:
+                    raise ValidationError(
+                        f'มี Tier มากกว่า 1 รายการที่ Min Score = {tier.min_score} '
+                        f'ในเกณฑ์ชุดเดียวกัน — ห้ามซ้ำ')
+                seen_scores.add(tier.min_score)
 
     @api.constrains(
         'harsh_brake_deduct', 'harsh_accel_deduct', 'harsh_corner_deduct',
@@ -225,10 +281,7 @@ class TelematicsScoringConfig(models.Model):
         'harsh_brake_g', 'harsh_accel_g', 'harsh_corner_g',
         'speeding_kmh_over', 'idle_min_threshold',
         'speed_limit_bkk', 'speed_limit_upcountry',
-        'tier_a_min_score', 'tier_a_bonus_pct',
-        'tier_b_min_score', 'tier_b_bonus_pct',
-        'tier_c_min_score', 'tier_c_bonus_pct',
-        'tier_d_min_score', 'tier_d_bonus_pct',
+        'tier_ids',
     }
 
     def write(self, vals):
@@ -325,7 +378,14 @@ class TelematicsScoringConfig(models.Model):
 
     def _build_config_payload(self):
         """แปลงเกณฑ์คะแนนทั้งหมดในฟอร์มนี้ เป็น dict ตาม schema ที่ Backend
-        ต้องการ สำหรับส่งไปตอนกด Push Config (POST /api/v1/config/scoring)"""
+        ต้องการ สำหรับส่งไปตอนกด Push Config (POST /api/v1/config/scoring)
+
+        แก้ 2026-08-04: เปลี่ยน tier_a_min_score...tier_d_bonus_pct (8 key
+        ตายตัว) เป็น key เดียว "tiers" ที่เป็น list แทน เพราะ Tier ฝั่ง Odoo
+        เปลี่ยนเป็นแบบไดนามิกแล้ว (เพิ่ม/ลบได้ ไม่ตายตัวที่ 4 ระดับอีกต่อไป)
+        — ⚠️ เป็น BREAKING CHANGE ของ API contract เดิม ต้องอัปเดตฝั่ง
+        Backend ให้อ่าน "tiers" (list ของ {name, min_score, bonus_pct})
+        แทนที่ 8 key แบบเดิมด้วย ไม่งั้น Backend จะอ่าน tier ไม่ได้เลย"""
         return {
             'config_name':         self.name,
             'score_base':          self.score_base,
@@ -342,14 +402,14 @@ class TelematicsScoringConfig(models.Model):
             'idle_min_threshold':  self.idle_min_threshold,
             'speed_limit_bkk':        self.speed_limit_bkk,
             'speed_limit_upcountry':  self.speed_limit_upcountry,
-            'tier_a_min_score':    self.tier_a_min_score,
-            'tier_a_bonus_pct':    self.tier_a_bonus_pct,
-            'tier_b_min_score':    self.tier_b_min_score,
-            'tier_b_bonus_pct':    self.tier_b_bonus_pct,
-            'tier_c_min_score':    self.tier_c_min_score,
-            'tier_c_bonus_pct':    self.tier_c_bonus_pct,
-            'tier_d_min_score':    self.tier_d_min_score,
-            'tier_d_bonus_pct':    self.tier_d_bonus_pct,
+            'tiers': [
+                {
+                    'name':      tier.name,
+                    'min_score': tier.min_score,
+                    'bonus_pct': tier.bonus_pct,
+                }
+                for tier in self.tier_ids.sorted(key=lambda t: t.min_score, reverse=True)
+            ],
             'max_deduct_per_trip': self.max_deduct_per_trip,
             'is_active':           self.is_active,
             'synced_from_odoo_at': (
@@ -478,3 +538,52 @@ class TelematicsScoringConfig(models.Model):
                 'last_used_date':          fields.Datetime.now(),
                 'total_trips_calculated':  active_cfg.total_trips_calculated + count,
             })
+
+
+class TelematicsScoringTier(models.Model):
+    """Tier 1 ระดับของ Scoring Config — ไดนามิก เพิ่ม/ลบ/แก้ชื่อได้เอง
+    ตาม FDD §12.3 (เดิมเคยตายตัวแค่ A/B/C/D 4 ระดับผ่าน 8 field บน
+    fleet.telematics.scoring.config โดยตรง — แก้ 2026-08-04)"""
+    _name        = 'fleet.telematics.scoring.tier'
+    _description = 'Fleet Telematics Scoring Tier'
+    _order       = 'min_score desc'
+
+    scoring_config_id = fields.Many2one(
+        'fleet.telematics.scoring.config', string='Scoring Config',
+        required=True, ondelete='cascade')
+    name = fields.Char(
+        string='Tier', required=True,
+        help='ชื่อ Tier — จะตั้งเป็น A/B/C/D, Gold/Silver/Bronze, '
+             'หรือชื่ออะไรก็ได้ตามต้องการ')
+    min_score = fields.Float(
+        string='Min Score', required=True,
+        help='คะแนนขั้นต่ำที่จะได้ Tier นี้ — พนักงานจะถูกจัดเข้า Tier '
+             'แรก (เรียงจากคะแนนมากไปน้อย) ที่คะแนนเฉลี่ยของเขา ≥ ค่านี้')
+    bonus_pct = fields.Float(string='Bonus %', required=True, default=0.0)
+
+    def _check_config_not_locked(self):
+        """ห้ามแก้ไข Tier ถ้า Scoring Config แม่ Active อยู่ — ใช้เงื่อนไข
+        เดียวกับ _LOCKED_CONFIG_FIELDS บน fleet.telematics.scoring.config
+        (เผื่อมีคนพยายามแก้ tier ตรงๆ ผ่าน model นี้ ข้าม write() ของ
+        parent ไปเลย ก็ยังต้องโดนล็อกเหมือนกัน)"""
+        for rec in self:
+            if rec.scoring_config_id.is_active:
+                raise UserError(
+                    'Config นี้ Active อยู่ — แก้ไข Tier ไม่ได้ '
+                    'เพื่อความโปร่งใสระหว่างรอบประเมิน\n\n'
+                    'วิธีแก้ไข: ปิด Active ก่อน (หรือสร้าง Config เวอร์ชันใหม่แทน)'
+                )
+
+    def write(self, vals):
+        self._check_config_not_locked()
+        return super().write(vals)
+
+    def unlink(self):
+        self._check_config_not_locked()
+        return super().unlink()
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        records = super().create(vals_list)
+        records._check_config_not_locked()
+        return records

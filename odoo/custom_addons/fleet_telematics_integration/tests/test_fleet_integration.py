@@ -9,6 +9,7 @@
 
 from unittest.mock import patch, MagicMock
 from datetime import datetime, date, timezone, timedelta
+import requests
 
 from odoo import fields
 from odoo.tests.common import TransactionCase
@@ -83,11 +84,46 @@ class FleetTelematicsBase(TransactionCase):
             vals['telematics_device_id'] = device
         return self.env['fleet.vehicle'].create(vals)
 
-    def _make_scoring(self, name='Cfg', active=True, **kw):
+    def _make_scoring(self, name='Cfg', active=True, tiers=None, **kw):
         # deactivate ที่มีอยู่ก่อน (ถ้า active=True)
         if active:
             self.env['fleet.telematics.scoring.config'].search(
                 [('is_active', '=', True)]).write({'is_active': False})
+
+        # แปลง legacy kwargs (tier_a_min_score=..., tier_a_bonus_pct=... ฯลฯ)
+        # เป็น tiers list แทน เพื่อไม่ต้องแก้ทุก test call site ที่เคยใช้
+        # kwargs แบบเดิม (Tier เปลี่ยนเป็นไดนามิกแล้ว 2026-08-04 ไม่มี field
+        # ตายตัว tier_a_min_score บน model โดยตรงอีกต่อไป — ดู tier_ids)
+        legacy_tier_keys = {
+            'tier_a_min_score', 'tier_a_bonus_pct',
+            'tier_b_min_score', 'tier_b_bonus_pct',
+            'tier_c_min_score', 'tier_c_bonus_pct',
+            'tier_d_min_score', 'tier_d_bonus_pct',
+        }
+        legacy = {k: kw.pop(k) for k in list(kw.keys()) if k in legacy_tier_keys}
+        if legacy and tiers is None:
+            tiers = [
+                {'name': 'A', 'min_score': legacy.get('tier_a_min_score', 90.0),
+                 'bonus_pct': legacy.get('tier_a_bonus_pct', 10.0)},
+                {'name': 'B', 'min_score': legacy.get('tier_b_min_score', 75.0),
+                 'bonus_pct': legacy.get('tier_b_bonus_pct', 5.0)},
+                {'name': 'C', 'min_score': legacy.get('tier_c_min_score', 60.0),
+                 'bonus_pct': legacy.get('tier_c_bonus_pct', 0.0)},
+            ]
+            if 'tier_d_bonus_pct' in legacy or 'tier_d_min_score' in legacy:
+                tiers.append({
+                    'name': 'D',
+                    'min_score': legacy.get('tier_d_min_score', 0.0),
+                    'bonus_pct': legacy.get('tier_d_bonus_pct', 0.0),
+                })
+
+        if tiers is None:
+            tiers = [
+                {'name': 'A', 'min_score': 90.0, 'bonus_pct': 10.0},
+                {'name': 'B', 'min_score': 75.0, 'bonus_pct': 5.0},
+                {'name': 'C', 'min_score': 60.0, 'bonus_pct': 0.0},
+            ]
+
         vals = dict(
             name=name, is_active=active, effective_date='2025-01-01',
             score_base=100.0, max_deduct_per_trip=50.0,
@@ -96,9 +132,7 @@ class FleetTelematicsBase(TransactionCase):
             idling_deduct=2.0, bump_deduct=4.0,
             harsh_brake_g=0.40, harsh_accel_g=0.40, harsh_corner_g=0.40,
             speeding_kmh_over=20.0, idle_min_threshold=5.0,
-            tier_a_min_score=90.0, tier_a_bonus_pct=10.0,
-            tier_b_min_score=75.0, tier_b_bonus_pct=5.0,
-            tier_c_min_score=60.0, tier_c_bonus_pct=0.0,
+            tier_ids=[(0, 0, t) for t in tiers],
         )
         vals.update(kw)
         return self.env['fleet.telematics.scoring.config'].create(vals)
@@ -234,7 +268,8 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
         self.assertTrue(cfg.id)
         self.assertEqual(cfg.score_base,         100.0)
         self.assertEqual(cfg.harsh_brake_deduct,   5.0)
-        self.assertEqual(cfg.tier_a_min_score,    90.0)
+        tier_a = cfg.tier_ids.filtered(lambda t: t.name == 'A')
+        self.assertEqual(tier_a.min_score,    90.0)
         self.assertTrue(cfg.is_active)
 
     def test_02_only_one_active_config_allowed(self):
@@ -242,6 +277,7 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
         self._make_scoring('UC02-02A', active=True)
         with self.assertRaises(ValidationError) as ctx:
             # ไม่ผ่าน _make_scoring เพราะมัน deactivate ให้อัตโนมัติ
+            # ไม่ต้องระบุ tier_ids เอง ใช้ default 3 แถว (A/B/C) ของ model เอง
             self.env['fleet.telematics.scoring.config'].create({
                 'name': 'UC02-02B', 'is_active': True,
                 'effective_date': '2025-01-01',
@@ -251,35 +287,31 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
                 'idling_deduct': 2.0, 'bump_deduct': 4.0,
                 'harsh_brake_g': 0.40, 'harsh_accel_g': 0.40, 'harsh_corner_g': 0.40,
                 'speeding_kmh_over': 20.0, 'idle_min_threshold': 5.0,
-                'tier_a_min_score': 90.0, 'tier_a_bonus_pct': 10.0,
-                'tier_b_min_score': 75.0, 'tier_b_bonus_pct': 5.0,
-                'tier_c_min_score': 60.0, 'tier_c_bonus_pct': 0.0,
             })
         self.assertIn('Active', str(ctx.exception))
 
-    def test_03a_tier_order_a_less_than_b_raises(self):
-        """Tier A < Tier B → ValidationError"""
+    def test_03a_duplicate_tier_min_score_raises(self):
+        """สอง Tier มี min_score เท่ากันใน config เดียวกัน → ValidationError
+        (เลือกไม่ได้ว่า tier ไหนควรมาก่อนตอนจัดพนักงานเข้า tier)"""
         with self.assertRaises(ValidationError):
-            self._make_scoring(active=False,
-                               tier_a_min_score=70.0,
-                               tier_b_min_score=80.0,
-                               tier_c_min_score=60.0)
+            self._make_scoring(active=False, tiers=[
+                {'name': 'A', 'min_score': 90.0, 'bonus_pct': 10.0},
+                {'name': 'A2', 'min_score': 90.0, 'bonus_pct': 8.0},
+            ])
 
-    def test_03b_tier_c_equal_zero_raises(self):
-        """Tier C = 0 → ValidationError (ต้อง > 0)"""
+    def test_03b_negative_tier_min_score_raises(self):
+        """Tier min_score ติดลบ → ValidationError"""
         with self.assertRaises(ValidationError):
-            self._make_scoring(active=False,
-                               tier_a_min_score=90.0,
-                               tier_b_min_score=75.0,
-                               tier_c_min_score=0.0)
+            self._make_scoring(active=False, tiers=[
+                {'name': 'A', 'min_score': -10.0, 'bonus_pct': 10.0},
+            ])
 
-    def test_03c_tier_b_equal_c_raises(self):
-        """Tier B == Tier C → ValidationError"""
+    def test_03c_negative_tier_bonus_pct_raises(self):
+        """Tier bonus_pct ติดลบ → ValidationError"""
         with self.assertRaises(ValidationError):
-            self._make_scoring(active=False,
-                               tier_a_min_score=90.0,
-                               tier_b_min_score=60.0,
-                               tier_c_min_score=60.0)
+            self._make_scoring(active=False, tiers=[
+                {'name': 'A', 'min_score': 90.0, 'bonus_pct': -5.0},
+            ])
 
     def test_04_negative_deduct_raises(self):
         """ค่าหักคะแนนติดลบ → ValidationError (_check_positive_deducts)"""
@@ -304,7 +336,9 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
                                max_deduct_per_trip=150.0)
 
     def test_08_build_config_payload_has_all_keys(self):
-        """_build_config_payload() ต้องครบทุก key ที่ Backend ต้องการ"""
+        """_build_config_payload() ต้องครบทุก key ที่ Backend ต้องการ
+        (แก้ 2026-08-04: tier_a_min_score...tier_c_bonus_pct ถูกแทนที่ด้วย
+        key เดียว 'tiers' ที่เป็น list เพราะ Tier เปลี่ยนเป็นไดนามิกแล้ว)"""
         cfg     = self._make_scoring('UC02-08')
         payload = cfg._build_config_payload()
         required = [
@@ -313,13 +347,13 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
             'speeding_deduct', 'idling_deduct', 'bump_deduct',
             'harsh_brake_g', 'harsh_accel_g', 'harsh_corner_g',
             'speeding_kmh_over', 'idle_min_threshold',
-            'tier_a_min_score', 'tier_a_bonus_pct',
-            'tier_b_min_score', 'tier_b_bonus_pct',
-            'tier_c_min_score', 'tier_c_bonus_pct',
+            'tiers',
         ]
         for key in required:
             self.assertIn(key, payload, f"payload ต้องมี key '{key}'")
         self.assertEqual(payload['score_base'], 100.0)
+        self.assertEqual(len(payload['tiers']), 3)  # default A/B/C
+        self.assertEqual(payload['tiers'][0]['name'], 'A')  # เรียง min_score มากไปน้อย
 
     def test_09_deactivate_then_activate_new(self):
         """Deactivate config เดิม แล้ว active ใหม่ → ต้องสำเร็จ"""
@@ -405,9 +439,7 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
             'idling_deduct': 2.0, 'bump_deduct': 4.0,
             'harsh_brake_g': 0.40, 'harsh_accel_g': 0.40, 'harsh_corner_g': 0.40,
             'speeding_kmh_over': 20.0, 'idle_min_threshold': 5.0,
-            'tier_a_min_score': 90.0, 'tier_a_bonus_pct': 10.0,
-            'tier_b_min_score': 75.0, 'tier_b_bonus_pct': 5.0,
-            'tier_c_min_score': 60.0, 'tier_c_bonus_pct': 0.0,
+            # ไม่ต้องระบุ tier_ids เอง ใช้ default 3 แถว (A/B/C) ของ model เอง
         })
         self.assertFalse(cfg.is_active)
         self.assertFalse(cfg.is_locked)
@@ -496,7 +528,8 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
         self.assertEqual(cfg.approved_by_id, approver)
         self.assertEqual(cfg.approved_at, approved_time)
         self.assertEqual(cfg.score_base, 100.0)
-        self.assertEqual(cfg.tier_a_min_score, 90.0)
+        tier_a = cfg.tier_ids.filtered(lambda t: t.name == 'A')
+        self.assertEqual(tier_a.min_score, 90.0)
 
     # ── เพิ่ม: กด Approve ซ้ำได้หลังจากเคย Approve+ปิด Active ไปแล้ว เพื่อ
     # "เปิดใช้งานอีกครั้ง" config ชุดเดิม ไม่ต้องสร้างใหม่ (แก้ตามที่ผู้ใช้
@@ -519,23 +552,33 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
         self.assertTrue(cfg.approved_by_id)
 
     # ── เพิ่มตาม FDD §12.3/§12.5: Tier D fields + History tracking ────────
+    # แก้ 2026-08-04: Tier เปลี่ยนเป็นไดนามิกแล้ว (tier_ids แทน 4 field
+    # ตายตัว A/B/C/D) — เทสนี้ปรับให้ทดสอบผ่าน tier_ids/tier model แทน
     def test_21_tier_d_fields_exist_and_editable(self):
-        """Tier D ต้องมี field ปรับได้เหมือน A/B/C (ไม่ใช่ hardcode) และ
-        ล็อกเมื่อ Active=True เหมือนฟิลด์เกณฑ์อื่น"""
-        cfg = self._make_scoring('UC02-21', active=False)
-        cfg.write({'tier_d_bonus_pct': 2.5})
-        self.assertEqual(cfg.tier_d_bonus_pct, 2.5)
+        """Tier ระดับต่ำสุดต้องแก้ bonus_pct ได้เหมือน tier อื่น (ไม่ hardcode)
+        และล็อกเมื่อ config แม่ Active=True เหมือนฟิลด์เกณฑ์อื่น"""
+        cfg = self._make_scoring('UC02-21', active=False, tiers=[
+            {'name': 'A', 'min_score': 90.0, 'bonus_pct': 10.0},
+            {'name': 'D', 'min_score': 0.0, 'bonus_pct': 0.0},
+        ])
+        tier_d = cfg.tier_ids.filtered(lambda t: t.name == 'D')
+        tier_d.write({'bonus_pct': 2.5})
+        self.assertEqual(tier_d.bonus_pct, 2.5)
 
         self.env['fleet.telematics.scoring.config'].search(
             [('is_active', '=', True), ('id', '!=', cfg.id)]).write({'is_active': False})
         cfg.write({'is_active': True})
+        # แก้ tier ตรงๆ ผ่าน model ลูกก็ต้องโดนล็อกเหมือนกัน (ไม่ใช่แค่
+        # ผ่าน write() ของ parent เท่านั้น)
         with self.assertRaises(UserError):
-            cfg.write({'tier_d_bonus_pct': 5.0})
+            tier_d.write({'bonus_pct': 5.0})
 
     def test_22_tier_d_bonus_negative_raises(self):
-        """% โบนัส Tier D ติดลบต้อง raise"""
+        """% โบนัสของ tier ติดลบต้อง raise (ไม่จำกัดแค่ tier ชื่อ 'D')"""
         with self.assertRaises(ValidationError):
-            self._make_scoring('UC02-22', active=False, tier_d_bonus_pct=-1.0)
+            self._make_scoring('UC02-22', active=False, tiers=[
+                {'name': 'D', 'min_score': 0.0, 'bonus_pct': -1.0},
+            ])
 
     def test_23_history_created_date_auto_set(self):
         """created_date ต้องตั้งค่าอัตโนมัติตอนสร้าง record ใหม่"""
@@ -788,8 +831,12 @@ class TestUC04TripSync(FleetTelematicsBase):
             'is_active': True,
             'effective_date': '2025-01-01',
             'score_base': 100.0, 'max_deduct_per_trip': 50.0,
-            'tier_a_min_score': 90.0, 'tier_b_min_score': 75.0,
-            'tier_c_min_score': 60.0,
+            'tier_ids': [
+                (0, 0, {'name': 'A', 'min_score': 90.0, 'bonus_pct': 10.0}),
+                (0, 0, {'name': 'B', 'min_score': 75.0, 'bonus_pct': 5.0}),
+                (0, 0, {'name': 'C', 'min_score': 60.0, 'bonus_pct': 0.0}),
+                (0, 0, {'name': 'D', 'min_score': 0.0,  'bonus_pct': 0.0}),
+            ],
         })
 
         Log = self.env['fleet.telematics.log']
@@ -847,8 +894,11 @@ class TestUC04TripSync(FleetTelematicsBase):
             'name': 'RECOMPUTE-TEST-CFG', 'is_active': True,
             'effective_date': '2025-01-01',
             'score_base': 100.0, 'max_deduct_per_trip': 50.0,
-            'tier_a_min_score': 90.0, 'tier_b_min_score': 75.0,
-            'tier_c_min_score': 60.0,
+            'tier_ids': [
+                (0, 0, {'name': 'A', 'min_score': 90.0, 'bonus_pct': 10.0}),
+                (0, 0, {'name': 'B', 'min_score': 75.0, 'bonus_pct': 5.0}),
+                (0, 0, {'name': 'C', 'min_score': 60.0, 'bonus_pct': 0.0}),
+            ],
         })
 
         cfg_rec = self.env['fleet.telematics.config'].search([], limit=1) \
@@ -1060,6 +1110,75 @@ class TestUC10IncentiveAuditLog(FleetTelematicsBase):
         tier = inc._local_tier_from_score()
         self.assertEqual(tier, 'A')
 
+    # ── แก้บั๊ก 2026-08-04: total_trips/avg_score ค้างเป็น 0 ตลอดไปถ้า
+    # สร้างใบโบนัสตอนที่ยังไม่มีทริป sync แล้วมีทริป sync เข้ามาทีหลัง เจอ
+    # จากหน้าจอจริงที่พนักงานมีทริปจริงแต่ใบโบนัสยังขึ้น "จำนวนทริปทั้งหมด:
+    # 0" ค้างอยู่ ──────────────────────────────────────────────────────────
+    def test_19c_stale_total_trips_recomputed_on_refresh(self):
+        """สร้างใบโบนัส "ก่อน" ทริปจะ sync (total_trips ค้างเป็น 0 ตาม
+        ที่ _compute_incentive คำนวณตอนนั้น) แล้วค่อยมีทริป synced ของ
+        พนักงานคนนั้นเข้ามาทีหลัง — กด "Refresh from Backend"
+        (action_refresh_bonus_from_backend) ต้อง recompute total_trips/
+        avg_score ใหม่ให้ตรงกับทริปจริง ไม่ใช่ค้างเป็น 0 ตลอดไป"""
+        inc = self.env['fleet.telematics.incentive'].create({
+            'driver_id': self.employee.id,
+            'date_from': date(2026, 8, 1),
+            'date_to':   date(2026, 8, 31),
+        })
+        self.assertEqual(inc.total_trips, 0)  # ยังไม่มีทริปตอนสร้าง
+
+        # จำลองว่ามีทริป synced ของพนักงานคนนี้เพิ่มเข้ามาทีหลัง
+        self.env['fleet.telematics.log'].create({
+            'vehicle_id':        self.v1.id,
+            'driver_id':         self.employee.id,
+            'trip_start':        '2026-08-15 08:00:00',
+            'external_trip_id':  'INC-STALE-TEST-01',
+            'driver_score':      85.0,
+            'distance_km':       12.5,
+            'state':             'synced',
+        })
+
+        with patch('requests.get', side_effect=requests.ConnectionError('no backend in test')):
+            inc.action_refresh_bonus_from_backend()
+
+        self.assertEqual(inc.total_trips, 1)
+        self.assertEqual(inc.avg_score, 85.0)
+
+    # ── แก้บั๊ก 2026-08-04: driver_user_id เปลี่ยนจาก related field เป็น
+    # field ธรรมดา sync เองใน create()/write() (แก้ ParseError ตอน upgrade
+    # module บน Odoo 19 — ดู known_risks.md ข้อ 15) — เทสนี้ยืนยันว่า sync
+    # ยังทำงานถูกต้องเหมือนเดิมแม้เปลี่ยนกลไกภายในไปแล้ว ──────────────────
+    def test_19d_driver_user_id_synced_on_create(self):
+        """สร้างใบโบนัสแล้ว driver_user_id ต้อง sync จาก driver_id.user_id
+        ให้อัตโนมัติทันที (ไม่ต้องพึ่ง related= อีกต่อไป)"""
+        user = self.env['res.users'].create({
+            'name': 'Test Driver User', 'login': 'test_driver_user_id@example.com',
+        })
+        employee = self.env['hr.employee'].create({
+            'name': 'Employee With User', 'user_id': user.id,
+        })
+        inc = self.env['fleet.telematics.incentive'].create({
+            'driver_id': employee.id,
+            'date_from': date(2026, 8, 1),
+            'date_to':   date(2026, 8, 31),
+        })
+        self.assertEqual(inc.driver_user_id, user)
+
+    def test_19e_driver_user_id_synced_on_write(self):
+        """เปลี่ยน driver_id ตอน Draft (ยังแก้ไขได้) → driver_user_id
+        ต้อง sync ตามให้ทันที ไม่ค้างเป็นค่าของ driver_id เดิม"""
+        user2 = self.env['res.users'].create({
+            'name': 'Second Driver User', 'login': 'test_driver_user_id_2@example.com',
+        })
+        employee2 = self.env['hr.employee'].create({
+            'name': 'Second Employee With User', 'user_id': user2.id,
+        })
+        inc = self._make_incentive()  # ใช้ self.employee (ไม่มี user_id ผูก)
+        self.assertFalse(inc.driver_user_id)
+
+        inc.write({'driver_id': employee2.id})
+        self.assertEqual(inc.driver_user_id, user2)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # UC-12 — Verify Device (GET /vehicles/{id}/device) — fleet_vehicle_ext.py
@@ -1083,6 +1202,30 @@ class TestUC12VerifyDevice(FleetTelematicsBase):
                 pass  # display_notification client action ไม่ raise แต่ ensure_one() ok
         self.assertFalse(self.v1.device_verify_mismatch)
         self.assertTrue(self.v1.device_verified_at)
+
+    # ── แก้บั๊ก 2026-08-03: เดิม telematics_register_status ตั้งได้แค่จาก
+    # action_register_device() เท่านั้น — ถ้า Device เคยผูกใหม่ผ่านปุ่ม
+    # "ส่งรถและบอร์ดไป Backend" (action_sync_to_backend) แทน สถานะจะค้าง
+    # เป็น "ยังไม่ลงทะเบียน" ตลอดไปแม้ Backend ยืนยันว่าผูกถูกต้องแล้วจริง ──
+    def test_01b_matching_verify_marks_device_as_registered(self):
+        """verify แล้วไม่ mismatch ต้องอัปเดต telematics_register_status
+        เป็น 'registered' ด้วย ไม่ใช่ค้างเป็น 'draft' ตลอดไป"""
+        self.v1.write({'telematics_register_status': 'draft'})
+        with patch('requests.get', return_value=self._mock_resp(
+                200, {'device_id': 'KTC-BASE-01'})):
+            self.v1.action_verify_device()
+        self.assertFalse(self.v1.device_verify_mismatch)
+        self.assertEqual(self.v1.telematics_register_status, 'registered')
+
+    def test_01c_mismatched_verify_does_not_mark_registered(self):
+        """verify แล้ว mismatch ต้องไม่แตะ telematics_register_status —
+        กันไม่ให้ทับสถานะเดิมด้วยข้อมูลที่ไม่ตรงกันจริงๆ"""
+        self.v1.write({'telematics_register_status': 'draft'})
+        with patch('requests.get', return_value=self._mock_resp(
+                200, {'device_id': 'KTC-DIFFERENT-99'})):
+            self.v1.action_verify_device()
+        self.assertTrue(self.v1.device_verify_mismatch)
+        self.assertEqual(self.v1.telematics_register_status, 'draft')
 
     def test_02_mismatched_device_flagged(self):
         with patch('requests.get', return_value=self._mock_resp(

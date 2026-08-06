@@ -12,19 +12,38 @@ import { Component, useState, onMounted, useRef } from "@odoo/owl";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
 
-const TIER_CONFIG = {
-    A: { label: "A — Excellent",         color: "#15803d", bg: "#dcfce7" },
-    B: { label: "B — Good",              color: "#1d4ed8", bg: "#dbeafe" },
-    C: { label: "C — Fair",              color: "#d97706", bg: "#fef3c7" },
-    D: { label: "D — Needs Improvement", color: "#b91c1c", bg: "#fee2e2" },
-};
+const TIER_COLOR_PALETTE = [
+    { color: "#15803d", bg: "#dcfce7" },  // เขียว — อันดับ 1
+    { color: "#1d4ed8", bg: "#dbeafe" },  // ฟ้า — อันดับ 2
+    { color: "#d97706", bg: "#fef3c7" },  // ส้ม — อันดับ 3
+    { color: "#b91c1c", bg: "#fee2e2" },  // แดง — อันดับ 4 เป็นต้นไป (รวม
+                                           // "Below Minimum")
+];
 
-function getTier(score, cfg) {
-    if (!cfg) return "D";
-    if (score >= (cfg.tier_a_min_score || 90)) return "A";
-    if (score >= (cfg.tier_b_min_score || 75)) return "B";
-    if (score >= (cfg.tier_c_min_score || 60)) return "C";
-    return "D";
+// แก้ 2026-08-04: Tier เปลี่ยนเป็นไดนามิกแล้ว ไม่ใช่แค่ A/B/C/D ตายตัว
+// อีกต่อไป — สีเลยต้องกำหนดจาก "ลำดับ" ของ tier ไม่ใช่ชื่อ tier โดยตรง
+function getTierStyle(tierName, tiers) {
+    const idx = (tiers || []).findIndex(t => t.name === tierName);
+    return idx >= 0 ? (TIER_COLOR_PALETTE[idx] || TIER_COLOR_PALETTE[TIER_COLOR_PALETTE.length - 1])
+                     : TIER_COLOR_PALETTE[TIER_COLOR_PALETTE.length - 1];
+}
+
+function getTier(score, tiers) {
+    // tiers: [{name, min_score, bonus_pct}, ...] เรียงจาก min_score มากไป
+    // น้อยแล้ว (จาก search_read order="min_score desc")
+    if (!tiers || !tiers.length) {
+        // ไม่มี Scoring Config Active หรือไม่มี tier ตั้งไว้เลย → fallback
+        // เป็น threshold มาตรฐาน (ตรงกับฝั่ง Python ใน telematics_log.py/
+        // telematics_incentive.py)
+        if (score >= 90) return "A";
+        if (score >= 75) return "B";
+        if (score >= 60) return "C";
+        return "D";
+    }
+    for (const t of tiers) {
+        if (score >= t.min_score) return t.name;
+    }
+    return "Below Minimum";
 }
 
 async function odooRpc(route, params = {}) {
@@ -55,6 +74,7 @@ export class DriverDashboard extends Component {
             trendData:      [],         // [{month, avg_score}]
             energyKPI:      null,       // {total_distance, total_fuel, total_idle, total_harsh}
             scoringConfig:  null,
+            tiers:          [],  // [{name, min_score, bonus_pct}] จาก Scoring Config ที่ Active
         });
         this.chart = null;
 
@@ -68,16 +88,35 @@ export class DriverDashboard extends Component {
         this.state.error   = null;
         try {
             // 1) ดึง Scoring Config สำหรับ tier thresholds
+            // แก้บั๊ก 2026-08-04: Tier เปลี่ยนเป็นไดนามิกแล้ว (tier_ids
+            // แทน tier_a_min_score/tier_b_min_score/tier_c_min_score ที่ไม่
+            // มี field พวกนี้บน model อีกต่อไป) — ต้องดึง tier_ids (list
+            // ของ id) ก่อน แล้วค่อยดึงรายละเอียดแต่ละ tier อีกครั้งจาก
+            // fleet.telematics.scoring.tier เรียงจาก min_score มากไปน้อย
             const cfgResult = await odooRpc("/web/dataset/call_kw", {
                 model:  "fleet.telematics.scoring.config",
                 method: "search_read",
-                args:   [[["active", "=", true]]],
+                args:   [[["is_active", "=", true]]],
                 kwargs: {
-                    fields:  ["tier_a_min_score", "tier_b_min_score", "tier_c_min_score"],
+                    fields:  ["tier_ids"],
                     limit:   1,
                 },
             });
-            this.state.scoringConfig = cfgResult?.[0] || null;
+            const activeCfg = cfgResult?.[0] || null;
+            let tiers = [];
+            if (activeCfg && activeCfg.tier_ids && activeCfg.tier_ids.length) {
+                tiers = await odooRpc("/web/dataset/call_kw", {
+                    model:  "fleet.telematics.scoring.tier",
+                    method: "search_read",
+                    args:   [[["id", "in", activeCfg.tier_ids]]],
+                    kwargs: {
+                        fields:  ["name", "min_score", "bonus_pct"],
+                        order:   "min_score desc",
+                    },
+                });
+            }
+            this.state.scoringConfig = activeCfg;
+            this.state.tiers = tiers;
 
             // 2) ดึง aggregate ต่อคนขับ
             const logs = await odooRpc("/web/dataset/call_kw", {
@@ -98,7 +137,7 @@ export class DriverDashboard extends Component {
                     fuel:        Math.round((r.fuel_used_est || 0) * 10) / 10,
                     idle:        Math.round(r.idle_min || 0),
                     harsh:       (r.harsh_brake_count || 0) + (r.harsh_accel_count || 0) + (r.harsh_corner_count || 0),
-                    tier:        getTier(r.driver_score || 0, this.state.scoringConfig),
+                    tier:        getTier(r.driver_score || 0, this.state.tiers),
                 }));
 
             // 3) Energy KPI รวมทั้งฟลีท
@@ -215,7 +254,7 @@ export class DriverDashboard extends Component {
     }
 
     getTierConfig(tier) {
-        return TIER_CONFIG[tier] || TIER_CONFIG["D"];
+        return getTierStyle(tier, this.state.tiers);
     }
 }
 
