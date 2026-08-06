@@ -4,11 +4,13 @@
 //
 // แสดง:
 //   1) Scorecard รายพนักงาน (avatar + tier badge + คะแนนเฉลี่ย)
-//   2) Trend กราฟคะแนนรายเดือน (Chart.js)
+//   2) Trend กราฟคะแนนรายเดือน (วาดเองด้วย Canvas 2D — แก้ 2026-08-06:
+//      เดิมใช้ Chart.js โหลดผ่าน CDN ภายนอก พังเงียบๆ ถ้าเครื่อง Odoo
+//      ไม่มีอินเทอร์เน็ตออกนอก เปลี่ยนมาไม่พึ่ง library ภายนอกเลย)
 //   3) Energy KPI (น้ำมัน, idle time, ระยะทาง, harsh events)
 //   4) กดชื่อคนขับ → ดู Trip Log ของคนนั้น
 
-import { Component, useState, onMounted, useRef } from "@odoo/owl";
+import { Component, useState, onMounted, onWillUnmount, useRef } from "@odoo/owl";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
 
@@ -46,6 +48,36 @@ function getTier(score, tiers) {
     return "Below Minimum";
 }
 
+// แก้ตามที่ผู้ใช้ขอ 2026-08-06 (รอบ 2): เปลี่ยนจาก preset "เดือนนี้/เดือน
+// ที่แล้ว/ทั้งหมด" เป็นเลือก "ปี + เดือน" ได้อิสระแทน — ย้อนหลังได้กี่ปี
+// อิงตาม FDD หัวข้อ "Data Retention": trip summary เก็บย้อนหลัง 3 ปี
+// (raw telemetry เก็บแค่ 90 วัน แต่ trip summary ที่ dashboard นี้ใช้อยู่
+// เก็บ 3 ปี) — ให้เลือกปีได้ 3 ปีย้อนหลัง (ปีนี้ + 2 ปีก่อนหน้า) ตรงกับ
+// ข้อมูลที่ยังมีอยู่จริงในระบบ เกินกว่านั้นข้อมูลไม่มีอยู่แล้วตามสเปค
+const MONTH_NAMES_TH = [
+    "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+    "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม",
+];
+
+function getYearOptions() {
+    const currentYear = new Date().getFullYear();
+    // FDD: trip summary เก็บย้อนหลัง 3 ปี → ให้เลือกได้ปีนี้ + 2 ปีก่อนหน้า
+    return [currentYear, currentYear - 1, currentYear - 2];
+}
+
+function getMonthOptions() {
+    return MONTH_NAMES_TH.map((label, i) => ({ value: i + 1, label }));
+}
+
+function getPeriodRange(mode, year, month) {
+    if (mode === "all_time") return null;
+    const pad = (n) => String(n).padStart(2, "0");
+    const fmt = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const from = new Date(year, month - 1, 1);
+    const to   = new Date(year, month, 1);
+    return { dateFrom: fmt(from), dateTo: fmt(to) };
+}
+
 async function odooRpc(route, params = {}) {
     const res = await fetch(route, {
         method: "POST",
@@ -75,11 +107,36 @@ export class DriverDashboard extends Component {
             energyKPI:      null,       // {total_distance, total_fuel, total_idle, total_harsh}
             scoringConfig:  null,
             tiers:          [],  // [{name, min_score, bonus_pct}] จาก Scoring Config ที่ Active
+            periodMode:     "ym",          // "ym" (ปี+เดือนที่เลือก) หรือ
+                                            // "all_time" (ไม่กรองวันที่)
+            selectedYear:   new Date().getFullYear(),
+            selectedMonth:  new Date().getMonth() + 1,  // ค่าเริ่มต้น: เดือน
+                                                          // ปัจจุบัน ตรงกับ
+                                                          // รอบคำนวณ Incentive
         });
-        this.chart = null;
+        // หมายเหตุ: ไม่มี this.chart อีกต่อไปแล้ว (เคยเก็บ instance ของ
+        // Chart.js library ไว้ ตอนนี้วาดกราฟเองด้วย Canvas 2D ล้วนๆ ไม่ต้อง
+        // เก็บ object อะไรไว้ระหว่าง render — ดู _renderChart())
+        this._currentRange = null;  // ตั้งค่าจริงใน _loadDashboard() — เก็บ
+                                     // ไว้ให้ onViewTrips() เอาไปกรองต่อ
 
         onMounted(async () => {
             await this._loadDashboard();
+
+            // redraw กราฟเมื่อ resize หน้าต่าง (debounce กันเรียกถี่เกินไป)
+            // — เพราะตอนนี้วาดเองด้วย Canvas ต้องคำนวณขนาดใหม่เองตอน resize
+            // ไม่เหมือน Chart.js เดิมที่มี responsive:true จัดการให้อัตโนมัติ
+            this._resizeTimer = null;
+            this._onResize = () => {
+                clearTimeout(this._resizeTimer);
+                this._resizeTimer = setTimeout(() => this._renderChart(), 150);
+            };
+            window.addEventListener("resize", this._onResize);
+        });
+
+        onWillUnmount(() => {
+            if (this._onResize) window.removeEventListener("resize", this._onResize);
+            clearTimeout(this._resizeTimer);
         });
     }
 
@@ -118,11 +175,21 @@ export class DriverDashboard extends Component {
             this.state.scoringConfig = activeCfg;
             this.state.tiers = tiers;
 
-            // 2) ดึง aggregate ต่อคนขับ
+            // 2) ดึง aggregate ต่อคนขับ — กรองตามปี/เดือนที่เลือก (ถ้าไม่ใช่
+            // "all_time") — เก็บ range ไว้ที่ this._currentRange ด้วย เพื่อ
+            // ให้ onViewTrips() เอาไปกรองหน้า Trip Logs ต่อได้ (แก้บั๊กที่
+            // เคยกด "ดู Trip Logs →" แล้วไม่กรองตามเดือนที่เลือกไว้เลย)
+            const range = getPeriodRange(this.state.periodMode, this.state.selectedYear, this.state.selectedMonth);
+            this._currentRange = range;
+            const domain = [["state", "=", "synced"]];
+            if (range) {
+                domain.push(["trip_start", ">=", range.dateFrom]);
+                domain.push(["trip_start", "<", range.dateTo]);
+            }
             const logs = await odooRpc("/web/dataset/call_kw", {
                 model:  "fleet.telematics.log",
                 method: "read_group",
-                args:   [[["state", "=", "synced"]], ["driver_id", "driver_score:avg", "distance_km:sum", "fuel_used_est:sum", "idle_min:sum", "harsh_brake_count:sum", "harsh_accel_count:sum", "harsh_corner_count:sum"], ["driver_id"]],
+                args:   [domain, ["driver_id", "driver_score:avg", "distance_km:sum", "fuel_used_est:sum", "idle_min:sum", "harsh_brake_count:sum", "harsh_accel_count:sum", "harsh_corner_count:sum"], ["driver_id"]],
                 kwargs: { orderby: "driver_score desc" },
             });
 
@@ -186,69 +253,162 @@ export class DriverDashboard extends Component {
 
     _renderChart() {
         if (!this.chartRef.el) return;
-        const ctx = this.chartRef.el.getContext("2d");
+        const canvas = this.chartRef.el;
+        const ctx = canvas.getContext("2d");
         if (!ctx) return;
 
-        if (this.chart) { this.chart.destroy(); this.chart = null; }
+        // แก้บั๊ก 2026-08-06: เดิมโหลด Chart.js จาก CDN ภายนอก
+        // (cdn.jsdelivr.net) ตอน runtime — ถ้าเครื่องที่รัน Odoo ไม่มี
+        // อินเทอร์เน็ตออกนอก (พบได้บ่อยมากกับเครื่อง dev/on-premise ในองค์กร)
+        // สคริปต์จะโหลดไม่สำเร็จแบบเงียบๆ ไม่มี error ให้เห็นเลย เพราะไม่มี
+        // s.onerror ดักไว้ — กราฟเลยว่างเปล่าตลอดไปโดยไม่รู้สาเหตุ (เจอจริง
+        // จากภาพหน้าจอที่ผู้ใช้ส่งมา) เปลี่ยนมาวาดกราฟเองด้วย Canvas 2D API
+        // ล้วนๆ แทน ไม่พึ่ง library ภายนอกเลยสักตัว รับประกันว่าทำงานได้
+        // แน่นอนไม่ว่าเครื่องจะต่อเน็ตได้หรือไม่ก็ตาม
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.parentElement.getBoundingClientRect();
+        const width  = Math.max(rect.width, 280);
+        const height = 240;
+        canvas.width  = width * dpr;
+        canvas.height = height * dpr;
+        canvas.style.width  = width + "px";
+        canvas.style.height = height + "px";
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
 
-        // ใช้ Chart.js ที่โหลดผ่าน CDN
-        if (!window.Chart) {
-            const s = document.createElement("script");
-            s.src = "https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js";
-            s.onload = () => this._renderChart();
-            document.head.appendChild(s);
+        const data = this.state.trendData;
+        const pad  = { top: 16, right: 16, bottom: 30, left: 36 };
+        const plotW = width - pad.left - pad.right;
+        const plotH = height - pad.top - pad.bottom;
+
+        // ── แกน Y (0-100) + เส้น gridline แนวนอน ──────────────────────
+        ctx.strokeStyle = "#e5e7eb";
+        ctx.fillStyle   = "#9ca3af";
+        ctx.font        = "11px sans-serif";
+        ctx.textAlign   = "right";
+        ctx.textBaseline = "middle";
+        const ySteps = [0, 25, 50, 75, 100];
+        for (const yVal of ySteps) {
+            const y = pad.top + plotH * (1 - yVal / 100);
+            ctx.beginPath();
+            ctx.moveTo(pad.left, y);
+            ctx.lineTo(pad.left + plotW, y);
+            ctx.stroke();
+            ctx.fillText(String(yVal), pad.left - 8, y);
+        }
+
+        if (!data.length) {
+            ctx.textAlign = "center";
+            ctx.fillText("ไม่มีข้อมูล trend", width / 2, height / 2);
             return;
         }
 
-        const labels = this.state.trendData.map(d => d.month);
-        const scores = this.state.trendData.map(d => d.score);
+        // ── จุดข้อมูลแต่ละเดือน ──────────────────────────────────────
+        const n = data.length;
+        const points = data.map((d, i) => ({
+            x: pad.left + (n === 1 ? plotW / 2 : (plotW * i) / (n - 1)),
+            y: pad.top + plotH * (1 - Math.min(d.score, 100) / 100),
+            label: d.month,
+            score: d.score,
+        }));
 
-        this.chart = new window.Chart(ctx, {
-            type: "line",
-            data: {
-                labels,
-                datasets: [{
-                    label:           "Driver Score",
-                    data:            scores,
-                    borderColor:     "#3b82f6",
-                    backgroundColor: "rgba(59,130,246,0.08)",
-                    tension:         0.3,
-                    fill:            true,
-                    pointRadius:     4,
-                    pointBackgroundColor: "#3b82f6",
-                }],
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                scales: {
-                    y: { min: 0, max: 100, title: { display: true, text: "Score" } },
-                    x: { title: { display: true, text: "เดือน" } },
-                },
-                plugins: {
-                    legend: { display: false },
-                    tooltip: {
-                        callbacks: {
-                            label: ctx => `Score: ${ctx.parsed.y}`
-                        },
-                    },
-                },
-            },
-        });
+        // ── พื้นที่ใต้เส้น (fill) ────────────────────────────────────
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, pad.top + plotH);
+        for (const p of points) ctx.lineTo(p.x, p.y);
+        ctx.lineTo(points[points.length - 1].x, pad.top + plotH);
+        ctx.closePath();
+        ctx.fillStyle = "rgba(59,130,246,0.08)";
+        ctx.fill();
+
+        // ── เส้นกราฟ ────────────────────────────────────────────────
+        ctx.beginPath();
+        points.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+        ctx.strokeStyle = "#3b82f6";
+        ctx.lineWidth   = 2;
+        ctx.lineJoin    = "round";
+        ctx.stroke();
+
+        // ── จุด + label ค่าคะแนน + label เดือน ──────────────────────
+        ctx.textBaseline = "alphabetic";
+        for (const p of points) {
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+            ctx.fillStyle = "#3b82f6";
+            ctx.fill();
+            ctx.strokeStyle = "#ffffff";
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+
+            // ค่าคะแนนเหนือจุด
+            ctx.fillStyle = "#1d4ed8";
+            ctx.font = "bold 11px sans-serif";
+            ctx.textAlign = "center";
+            ctx.fillText(String(p.score), p.x, p.y - 10);
+
+            // label เดือนใต้แกน X (ตัดให้สั้นถ้ามีหลายจุดเกินไปจนซ้อนกัน)
+            const showLabel = n <= 8 || points.indexOf(p) % Math.ceil(n / 8) === 0;
+            if (showLabel) {
+                ctx.fillStyle = "#6b7280";
+                ctx.font = "10px sans-serif";
+                const shortLabel = (p.label || "").slice(0, 7);
+                ctx.fillText(shortLabel, p.x, height - 8);
+            }
+        }
     }
 
     onDriverClick(driverId) {
         this._loadTrend(driverId);
     }
 
+    onYearChange(ev) {
+        this.state.selectedYear = parseInt(ev.target.value, 10);
+        this._loadDashboard();
+    }
+
+    onMonthChange(ev) {
+        this.state.selectedMonth = parseInt(ev.target.value, 10);
+        this._loadDashboard();
+    }
+
+    onPeriodModeChange(ev) {
+        this.state.periodMode = ev.target.checked ? "all_time" : "ym";
+        this._loadDashboard();
+    }
+
+    get yearOptions() {
+        return getYearOptions();
+    }
+
+    get monthOptions() {
+        return getMonthOptions();
+    }
+
+    get periodLabel() {
+        if (this.state.periodMode === "all_time") return "ทั้งหมด (ตลอดชีพ)";
+        const m = MONTH_NAMES_TH[this.state.selectedMonth - 1];
+        return `${m} ${this.state.selectedYear}`;
+    }
+
+    // แก้บั๊ก 2026-08-06 (รอบ 2): เดิมปุ่ม "ดู Trip Logs →" เปิด Trip Logs
+    // แบบกรองแค่ driver_id อย่างเดียว ไม่กรองตามช่วงเวลาที่เลือกไว้บน
+    // Dashboard เลย (เลือก "สิงหาคม 2026" อยู่ แต่กดแล้วเห็นทริปทุกเดือน
+    // ของคนนั้นปนกันหมด) — ใช้ this._currentRange (คำนวณไว้ตอน
+    // _loadDashboard() ล่าสุด) มาเติมเป็นเงื่อนไข trip_start เพิ่มด้วย ให้
+    // ตรงกับสิ่งที่กำลังดูอยู่บน Dashboard จริงๆ
     onViewTrips(driverId, ev) {
         ev.stopPropagation();
+        const domain = [["driver_id", "=", driverId]];
+        if (this._currentRange) {
+            domain.push(["trip_start", ">=", this._currentRange.dateFrom]);
+            domain.push(["trip_start", "<", this._currentRange.dateTo]);
+        }
         this.actionService.doAction({
             type:      "ir.actions.act_window",
-            name:      "Trip Logs",
+            name:      `Trip Logs — ${this.periodLabel}`,
             res_model: "fleet.telematics.log",
             views:     [[false, "list"], [false, "form"]],
-            domain:    [["driver_id", "=", driverId]],
+            domain,
             context:   { search_default_driver_id: driverId },
         });
     }
