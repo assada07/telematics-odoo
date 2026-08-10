@@ -28,16 +28,28 @@
                         string="วันนี้"
                         domain="[('trip_start','&gt;=', context_today().strftime('%Y-%m-%d 00:00:00'))]"/>
                 <separator/>
-                <!-- เพิ่มตาม FDD §12.6: filter ตาม Tier (A/B/C/D) -->
-                <filter name="tier_a" string="Tier A — ดีเยี่ยม"     domain="[('tier','=','A')]"/>
-                <filter name="tier_b" string="Tier B — ดี"          domain="[('tier','=','B')]"/>
-                <filter name="tier_c" string="Tier C — พอใช้"       domain="[('tier','=','C')]"/>
-                <filter name="tier_d" string="Tier D — ต้องปรับปรุง" domain="[('tier','=','D')]"/>
+                <!-- แก้ 2026-08-10: เดิม filter เทียบชื่อ tier ตรงๆ ('A'/'B'/
+                     'C'/'D') ตาม FDD §12.6 — ใช้ไม่ได้อีกต่อไปตั้งแต่ Tier
+                     เปลี่ยนเป็นไดนามิก (2026-08-04, Admin ตั้งชื่อเองได้
+                     ไม่จำกัดแค่ A/B/C/D) เปลี่ยนมาใช้ tier_rank (ลำดับ) แทน
+                     ชื่อ — ใช้ได้ไม่ว่า Admin จะตั้งชื่อ Tier ว่าอะไรก็ตาม -->
+                <filter name="tier_1" string="Tier อันดับ 1 (สูงสุด)"
+                        domain="[('tier_rank','=',1)]"/>
+                <filter name="tier_2" string="Tier อันดับ 2"
+                        domain="[('tier_rank','=',2)]"/>
+                <filter name="tier_3" string="Tier อันดับ 3"
+                        domain="[('tier_rank','=',3)]"/>
+                <filter name="tier_4_plus" string="Tier อันดับ 4 ขึ้นไป"
+                        domain="[('tier_rank','&gt;=',4)]"/>
+                <filter name="tier_below_min" string="Below Minimum (ต่ำกว่าทุก Tier)"
+                        domain="[('tier_rank','=',0)]"/>
                 <group>
                     <filter name="group_driver"  string="Driver"      context="{'group_by':'driver_id'}"/>
                     <filter name="group_vehicle" string="Vehicle"     context="{'group_by':'vehicle_id'}"/>
                     <filter name="group_month"   string="Month"       context="{'group_by':'trip_start:month'}"/>
                     <filter name="group_state"   string="Sync Status" context="{'group_by':'state'}"/>
+                    <!-- group_by tier (ชื่อจริง) ยังใช้ได้ปกติ ไม่กระทบ —
+                         group_by ไม่ต้อง enumerate ชื่อล่วงหน้าเหมือน filter -->
                     <filter name="group_tier"    string="Tier"        context="{'group_by':'tier'}"/>
                 </group>
             </search>
@@ -77,11 +89,15 @@
                 <field name="harsh_corner_count" optional="hide"/>
                 <field name="speeding_count"    optional="show"/>
                 <field name="driver_score"      string="Driver Score"/>
+                <field name="tier_rank"           invisible="1"/>
+                <!-- แก้ 2026-08-10: เทียบ tier_rank (ลำดับ) แทนชื่อ tier
+                     ตรงๆ — ใช้ได้ไม่ว่า Admin จะตั้งชื่อ Tier ว่าอะไร
+                     (เดิม tier=='A' พังทันทีถ้า Admin เปลี่ยนชื่อ Tier) -->
                 <field name="tier"               widget="badge"
-                       decoration-success="tier=='A'"
-                       decoration-info="tier=='B'"
-                       decoration-warning="tier=='C'"
-                       decoration-danger="tier=='D'"/>
+                       decoration-success="tier_rank==1"
+                       decoration-info="tier_rank==2"
+                       decoration-warning="tier_rank==3"
+                       decoration-danger="tier_rank&gt;=4 or tier_rank==0"/>
                 <field name="state"             widget="badge"/>
             </list>
         </field>
@@ -122,11 +138,12 @@
                     <group string="Driver Score &amp; Events">
                         <group>
                             <field name="driver_score"/>
+                            <field name="tier_rank" invisible="1"/>
                             <field name="tier" widget="badge"
-                                   decoration-success="tier=='A'"
-                                   decoration-info="tier=='B'"
-                                   decoration-warning="tier=='C'"
-                                   decoration-danger="tier=='D'"/>
+                                   decoration-success="tier_rank==1"
+                                   decoration-info="tier_rank==2"
+                                   decoration-warning="tier_rank==3"
+                                   decoration-danger="tier_rank&gt;=4 or tier_rank==0"/>
                             <field name="harsh_brake_count"  string="Harsh Brake"/>
                             <field name="harsh_accel_count"  string="Harsh Acceleration"/>
                         </group>

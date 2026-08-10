@@ -9,6 +9,7 @@
 # Manager) → Push Config → เปิด Active (ล็อกฟอร์มถาวรจนกว่าจะปิด Active)
 # ==============================================================================
 import logging
+import re
 import requests
 
 from odoo import models, fields, api
@@ -111,9 +112,12 @@ class TelematicsScoringConfig(models.Model):
     # _get_tier_for_score() ใน telematics_incentive.py/telematics_log.py)
     def _default_tier_ids(self):
         return [
-            (0, 0, {'name': 'A', 'min_score': 90.0, 'bonus_pct': 10.0}),
-            (0, 0, {'name': 'B', 'min_score': 75.0, 'bonus_pct': 5.0}),
-            (0, 0, {'name': 'C', 'min_score': 60.0, 'bonus_pct': 0.0}),
+            (0, 0, {'name': 'A', 'min_score': 90.0, 'bonus_pct': 10.0,
+                    'grade_label': 'ดีเยี่ยม', 'badge_color': '#28a745'}),
+            (0, 0, {'name': 'B', 'min_score': 75.0, 'bonus_pct': 5.0,
+                    'grade_label': 'ดี', 'badge_color': '#17a2b8'}),
+            (0, 0, {'name': 'C', 'min_score': 60.0, 'bonus_pct': 0.0,
+                    'grade_label': 'พอใช้', 'badge_color': '#ffc107'}),
         ]
 
     tier_ids = fields.One2many(
@@ -404,9 +408,11 @@ class TelematicsScoringConfig(models.Model):
             'speed_limit_upcountry':  self.speed_limit_upcountry,
             'tiers': [
                 {
-                    'name':      tier.name,
-                    'min_score': tier.min_score,
-                    'bonus_pct': tier.bonus_pct,
+                    'name':        tier.name,
+                    'min_score':   tier.min_score,
+                    'bonus_pct':   tier.bonus_pct,
+                    'grade_label': tier.grade_label,
+                    'badge_color': tier.badge_color,
                 }
                 for tier in self.tier_ids.sorted(key=lambda t: t.min_score, reverse=True)
             ],
@@ -453,12 +459,56 @@ class TelematicsScoringConfig(models.Model):
                 backend_name = resp_cfg.get('config_name', self.name)
                 msg = f"Config '{backend_name}' activated บน Backend แล้ว"
             except Exception:
+                resp_cfg = {}
                 msg = f'Backend ตอบกลับ {resp.status_code}'
+
+            # เพิ่มใหม่ 2026-08-10: ยืนยันว่า Backend เก็บ tiers ที่ส่งไปจริง
+            # ก่อนหน้านี้เจอบั๊กว่า Backend เก่าไม่มี column/ตารางรองรับ
+            # "tiers" เลย — Pydantic ไม่ error (ไม่ได้ตั้ง extra="forbid")
+            # ทำให้ HTTP 201 กลับมา "สำเร็จ" ทั้งที่ tier ไม่ได้ถูกบันทึกจริง
+            # แอดมินไม่มีทางรู้เลยจากหน้าจอเดิม — เช็คเพิ่มตรงนี้แทนที่จะ
+            # เชื่อ HTTP status อย่างเดียว: ถ้าจำนวน tier ที่ Backend ตอบ
+            # กลับมาไม่ตรงกับที่ส่งไป ให้เตือน Admin ทันที (ไม่ raise error
+            # เพราะ config อื่นๆ ก็ยัง push สำเร็จอยู่ แค่ tier มีปัญหา)
+            sent_tiers = payload.get('tiers', [])
+            backend_tiers = resp_cfg.get('tiers')
+            tier_warning = None
+            if backend_tiers is None:
+                tier_warning = (
+                    '⚠️ Backend เวอร์ชันนี้ไม่ส่ง "tiers" กลับมาเลยในคำตอบ — '
+                    'อาจเป็น Backend รุ่นเก่าที่ยังไม่รองรับ Dynamic Tier '
+                    '(ยังไม่มี scoring_tier_cache) เกณฑ์ Tier ที่ตั้งไว้อาจ '
+                    'ไม่ถูกใช้จริงฝั่ง Backend — ติดต่อทีม Backend เพื่อยืนยัน'
+                )
+            elif len(backend_tiers) != len(sent_tiers):
+                tier_warning = (
+                    f'⚠️ ส่ง Tier ไป {len(sent_tiers)} รายการ แต่ Backend '
+                    f'ยืนยันกลับมาแค่ {len(backend_tiers)} รายการ — เกณฑ์ Tier '
+                    'อาจไม่ตรงกับที่ตั้งไว้ใน Odoo ตรวจสอบก่อนใช้งานจริง'
+                )
 
             self.write({
                 'last_push_at':     fields.Datetime.now(),
-                'last_push_status': f'OK {resp.status_code}',
+                'last_push_status': (
+                    f'OK {resp.status_code}'
+                    if not tier_warning else
+                    f'OK {resp.status_code} — {tier_warning}'
+                ),
             })
+
+            if tier_warning:
+                return {
+                    'type': 'ir.actions.client',
+                    'tag':  'display_notification',
+                    'params': {
+                        'title':   '⚠️ Push Config สำเร็จ แต่ Tier อาจไม่ครบ',
+                        'message': f'{msg}\n\n{tier_warning}',
+                        'type':    'warning',
+                        'sticky':  True,
+                        'next': {'type': 'ir.actions.client', 'tag': 'soft_reload'},
+                    },
+                }
+
             return {
                 'type': 'ir.actions.client',
                 'tag':  'display_notification',
@@ -560,6 +610,34 @@ class TelematicsScoringTier(models.Model):
         help='คะแนนขั้นต่ำที่จะได้ Tier นี้ — พนักงานจะถูกจัดเข้า Tier '
              'แรก (เรียงจากคะแนนมากไปน้อย) ที่คะแนนเฉลี่ยของเขา ≥ ค่านี้')
     bonus_pct = fields.Float(string='Bonus %', required=True, default=0.0)
+
+    # เพิ่มใหม่ 2026-08-10: 2 field ที่ FDD §12.3 ระบุไว้ในตาราง Tier Table
+    # (Tier / คะแนนขั้นต่ำ / เกรด / สี Badge / % โบนัส) แต่ตอนแก้เป็น
+    # Dynamic Tier (2026-08-04) ไม่ได้ใส่มาด้วย — เอกสารบอกว่า "ปรับได้"
+    # ทั้งคู่ (ไม่ใช่ hardcode ในโค้ดเหมือนก่อนหน้านี้)
+    grade_label = fields.Char(
+        string='เกรด', default='',
+        help='คำอธิบาย Tier แบบสั้นๆ ที่แสดงในหน้าจอ/รายงาน — ตาม FDD '
+             'ตัวอย่างเริ่มต้นคือ "ดีเยี่ยม" (A) / "ดี" (B) / "พอใช้" (C) / '
+             '"ต้องปรับปรุง" (D) แต่ Admin แก้ข้อความเองได้อิสระ')
+    badge_color = fields.Char(
+        string='สี Badge', default='#6c757d',
+        help='สี Badge ของ Tier นี้ ในรูปแบบ hex code (เช่น #28a745) — '
+             'ใช้แสดงในหน้าจอ Trip Log/Incentive และ PDF Report แทนสีที่ '
+             'เคย hardcode ไว้ตายตัวแค่ 3-4 สีในโค้ด (ตาม FDD §12.3 '
+             '"สี Badge (ปรับได้)")')
+
+    @api.constrains('badge_color')
+    def _check_badge_color_format(self):
+        """ตรวจว่าเป็น hex color ที่ใช้กับ CSS ได้จริง (#RGB หรือ #RRGGBB)
+        กันพิมพ์ผิดแล้วไป break หน้าจอ/PDF เงียบๆ"""
+        hex_re = re.compile(r'^#[0-9A-Fa-f]{3}([0-9A-Fa-f]{3})?$')
+        for rec in self:
+            if rec.badge_color and not hex_re.match(rec.badge_color):
+                raise ValidationError(
+                    f'สี Badge ต้องเป็นรูปแบบ hex code เช่น #28a745 หรือ #2A5 '
+                    f'(ได้รับค่า: "{rec.badge_color}")'
+                )
 
     def _check_config_not_locked(self):
         """ห้ามแก้ไข Tier ถ้า Scoring Config แม่ Active อยู่ — ใช้เงื่อนไข

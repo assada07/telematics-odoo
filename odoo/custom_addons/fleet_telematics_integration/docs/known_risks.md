@@ -280,3 +280,105 @@ override แทน — field ธรรมดาแบบนี้ไม่ผ่
   ใช้งานได้ปกติจนกว่าจะ Push ใหม่อีกครั้ง แต่ Push ครั้งถัดไปจะพังถ้า
   Backend ยังอ่านฟอร์แมตเดิมอยู่
 - สีป้าย Tier ใน PDF report ยังไม่ไดนามิกเต็มรูปแบบ (ข้อ 5 ด้านบน)
+
+## 17. ✅ แก้แล้ว — Backend (assada07/telematics-backend) ไม่รองรับ "tiers" เลย — Silent Data Loss
+ตรวจ repo Backend จริงแล้วยืนยัน: `ScoringConfigRequest` (Pydantic) และ
+ตาราง `scoring_config_cache` **ไม่มี field/column `tiers` เลย** — เพราะ
+Pydantic ไม่ได้ตั้ง `extra="forbid"` ทำให้ POST `/config/scoring` ตอบ
+**HTTP 201 สำเร็จเสมอ** แม้ `tiers` ที่ Odoo ส่งไปจะถูกทิ้งเงียบๆ โดยไม่มี
+error ใดๆ — Admin เห็น "Push Config สำเร็จ ✅" ทั้งที่ Tier ไม่ได้ถูกบันทึก
+
+**ร้ายแรงกว่านั้น:** endpoint `GET /drivers/{id}/bonus` (ที่ Odoo ใช้เป็น
+แหล่งข้อมูลโบนัสหลักใน `_apply_backend_bonus()`) hardcode threshold ไว้
+ตายตัวที่ A=90/B=75/C=60 — ถ้า Admin ตั้ง Tier ต่างจาก default ใน Odoo
+**Backend จะคำนวณโบนัสผิดโดยไม่มี error แจ้งเตือนเลย** (path fallback ใน
+เครื่องที่ถูกต้องกว่ากลับไม่ถูกใช้ เพราะ Backend เรียกได้ปกติ ไม่ error)
+
+**แก้แล้วทั้ง 2 ฝั่ง:**
+- **Backend** (แก้แยก repo, ไม่ใช่ repo นี้): เพิ่มตาราง `scoring_tier_cache`
+  + column `speed_limit_bkk`/`speed_limit_upcountry`, endpoint `/bonus`,
+  `/score`, `/reports/driver-score` เปลี่ยนมาอ่าน Dynamic Tier จริงจาก DB
+  แทน hardcode (พร้อม fallback ปลอดภัยถ้า DB ยังไม่ migrate) — มี migration
+  script แยก (`migration_add_tier_support.sql`) สำหรับ DB ที่รันอยู่แล้ว
+- **Odoo** (repo นี้, แก้ 2026-08-10): `action_push_to_backend()` เพิ่มการ
+  เช็ค response หลัง push — ถ้า Backend ไม่ส่ง `tiers` กลับมาเลย หรือ
+  จำนวนไม่ตรงกับที่ส่งไป จะแจ้งเตือน Admin ทันที (⚠️ warning แทน ✅ success)
+  ไม่ใช่แค่เชื่อ HTTP status code เหมือนเดิม — ป้องกันปัญหาแบบนี้ไม่ให้
+  เงียบหายอีกในอนาคต แม้ Backend จะ regress กลับไปแบบไม่รองรับ tiers อีก
+  ก็ตาม
+
+**Test เพิ่ม:** `test_20e/f/g_push_*` ใน `test_fleet_integration.py`
+ยืนยัน warning ทำงานถูกทั้ง 3 กรณี (ไม่มี tiers เลย / จำนวนไม่ตรง / ตรงกัน)
+
+## 18. ✅ แก้แล้ว — Tier Table ขาด "เกรด" และ "สี Badge" ตามที่ FDD §12.3 ระบุ
+FDD §12.3 ตาราง Tier Table มี 5 คอลัมน์: Tier / คะแนนขั้นต่ำ / **เกรด** /
+**สี Badge** / % โบนัส แต่ตอนแก้เป็น Dynamic Tier (ข้อ 16, 2026-08-04)
+โมเดล `fleet.telematics.scoring.tier` มีแค่ 3 field (`name`, `min_score`,
+`bonus_pct`) — ขาด "เกรด" (คำอธิบายสั้นๆ) และ "สี Badge" ไปเลย ทั้งที่
+เอกสารเขียนกำกับไว้ชัดว่าทั้งคู่ "(ปรับได้)" คือ Admin ควรตั้งเองได้ ไม่ใช่
+hardcode ในโค้ด
+
+**แก้แล้ว:**
+- เพิ่ม field `grade_label` (Char, เกรด) และ `badge_color` (Char เก็บ hex
+  code, สี Badge) บน `fleet.telematics.scoring.tier`
+- เพิ่ม `@api.constrains('badge_color')` ตรวจรูปแบบ hex (`#RGB`/`#RRGGBB`)
+  กันพิมพ์ผิดแล้วไป break หน้าจอ/PDF เงียบๆ
+- Default tier A/B/C ตอนสร้าง config ใหม่ตั้งค่าให้ตรงตัวอย่างใน FDD เป๊ะ
+  (A=ดีเยี่ยม/#28a745, B=ดี/#17a2b8, C=พอใช้/#ffc107)
+- `_build_config_payload()` ส่ง `grade_label`/`badge_color` ไปให้ Backend
+  ด้วย (เผื่อ Backend อยากใช้แสดงผลฝั่งตัวเองในอนาคต)
+- เพิ่มคอลัมน์ "เกรด" และ "สี Badge" ในหน้าจอ Incentive Tiers
+  (`telematics_scoring_views.xml`)
+- **`driver_score_report.xml`** (PDF Monthly Score Report) — จุดที่ข้อ 16.5
+  เคยบันทึกไว้ว่า "ยัง hardcode สีไว้แค่ 3 สี" **แก้ให้ไดนามิกเต็มรูปแบบ
+  แล้ว**: อ่าน `badge_color`/`grade_label` จริงจาก
+  `doc.scoring_config_id.tier_ids` แทน hardcode `'A' == ... and '#15803D' or ...`
+  — ถ้าหา tier ที่ชื่อตรงกันไม่เจอ fallback เป็นสีเทากลาง (`#6c757d`) แทน
+  สีแดงเดิม (สีแดงเดิมสื่อความหมายผิดว่าเป็นสถานะแย่เสมอ ทั้งที่บางครั้ง
+  แค่ config เก่าไม่มี tier_ids ผูกอยู่)
+
+**Test เพิ่ม:** `test_01b`–`test_01f` ใน `test_fleet_integration.py`
+ยืนยัน default grade/color ตรง FDD, validation hex ทำงานถูก, และ
+`_build_config_payload()` ส่งครบ
+
+**ยังไม่ได้ทำ (นอกขอบเขตรอบนี้):** `telematics_log_views.xml` (Trip Log
+list/kanban) ยังใช้ `decoration-success="tier=='A'"` ฯลฯ และ filter
+`domain="[('tier','=','A')]"` แบบ hardcode 4 ตัวอักษร A/B/C/D ตรงๆ — ถ้า
+Admin ตั้งชื่อ Tier เป็นอย่างอื่น (เช่น Gold/Silver) filter จะหาไม่เจอ/
+badge จะไม่ขึ้นสี (field `tier` เองคำนวณถูกต้องอยู่แล้ว กระทบแค่ตัว
+filter/decoration ในหน้าจอ ไม่กระทบข้อมูลหรือการจ่ายโบนัส) — ต้องใช้
+custom widget ถ้าจะทำให้ badge ในหน้า list ใช้สีไดนามิกจาก `badge_color`
+จริง (ตัว native `decoration-*` ของ Odoo รองรับแค่ class Bootstrap ตายตัว
+ไม่รองรับ hex สีที่กำหนดเองในหน้าจอ list) — ยังไม่ได้ทำเพราะต้องทดสอบกับ
+Odoo instance จริง
+
+## 19. ✅ แก้แล้ว — Trip Log badge/filter hardcode A/B/C/D (ตามที่บันทึกไว้เป็น "ยังไม่ได้ทำ" ในข้อ 18)
+กลับมาแก้จุดที่ข้อ 18 บันทึกไว้ว่ายังไม่ทำ เพราะตอนแรกเข้าใจผิดว่าต้องใช้
+custom JS widget ถึงจะทำให้ badge/filter ใช้ได้กับชื่อ Tier ที่ Admin ตั้ง
+เอง — จริงๆ แล้วมีทางแก้แบบ Odoo native ล้วนๆ โดยไม่ต้องพึ่ง custom widget
+เลย ใช้ pattern เดียวกับที่ `static/src/js/driver_dashboard.js` เคยแก้
+ปัญหานี้ไปแล้ว (ข้อ 16.6): **ไล่สีตามลำดับ (rank) แทนชื่อ tier ตรงๆ**
+
+**สิ่งที่เปลี่ยน:**
+- เพิ่ม field ใหม่ `tier_rank` (Integer, stored, compute พร้อมกับ `tier`
+  ในเมธอดเดียวกัน `_compute_tier()` — ไม่ query ซ้ำ) บน
+  `fleet.telematics.log`: 1 = Tier สูงสุด, 2 = รองลงมา, ..., 0 = "Below
+  Minimum" (ต่ำกว่าทุก Tier ที่ตั้งไว้)
+- **Badge decoration** (`telematics_log_views.xml` ทั้ง list และ form)
+  เปลี่ยนจาก `decoration-success="tier=='A'"` เป็น
+  `decoration-success="tier_rank==1"` (และ 2/3/≥4-หรือ-0 ตามลำดับ) — badge
+  ขึ้นสีถูกต้องไม่ว่า Admin จะตั้งชื่อ Tier เป็นอะไรก็ตาม (Gold/Silver/
+  Bronze ก็ได้ ไม่จำกัดแค่ A/B/C/D อีกต่อไป)
+- **Search filter** เปลี่ยนจาก `domain="[('tier','=','A')]"` (4 ตัว
+  ตายตัว) เป็น `domain="[('tier_rank','=',1)]"` ฯลฯ พร้อมเปลี่ยนชื่อ label
+  เป็น "Tier อันดับ 1 (สูงสุด)" แทน "Tier A — ดีเยี่ยม" (ไม่ผูกกับชื่อ
+  Tier ที่อาจเปลี่ยนได้) และเพิ่ม filter แยกสำหรับ "Below Minimum"
+  (tier_rank=0) ที่ไม่เคย filter แยกได้มาก่อนเลยด้วย
+- `group_tier` (group by ชื่อ tier ตรงๆ) **ไม่ต้องแก้** — ใช้งานได้ปกติ
+  อยู่แล้วเพราะ group_by ไม่ต้อง enumerate ชื่อล่วงหน้าเหมือน filter
+
+**Test เพิ่ม:** `test_11d` (ยืนยัน tier_rank ถูกต้องกับชื่อ Tier แบบ
+กำหนดเอง เช่น Gold/Silver/Bronze) และ `test_11e` (ยืนยัน fallback
+threshold เดิม A/B/C/D ยังได้ rank 1/2/3/4 ตรงตามลำดับเหมือนเดิม ไม่กระทบ
+พฤติกรรมเก่า)
+

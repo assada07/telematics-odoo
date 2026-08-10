@@ -86,6 +86,19 @@ class TelematicsLog(models.Model):
     # เองได้ ไม่ใช่แค่ A/B/C/D อีกต่อไป)
     tier = fields.Char(string='Tier', compute='_compute_tier', store=True)
 
+    # เพิ่มใหม่ 2026-08-10: ใช้แทน hardcode tier=='A'/'B'/'C'/'D' ใน view
+    # decoration — Tier เปลี่ยนเป็นไดนามิกแล้ว (Admin ตั้งชื่อเองได้ เช่น
+    # Gold/Silver/Bronze) ทำให้ decoration ที่เทียบชื่อ tier ตรงๆ ใช้
+    # ไม่ได้อีกต่อไป (badge จะไม่มีสีถ้าเปลี่ยนชื่อ) — ใช้ "ลำดับ" แทนชื่อ
+    # (1=tier สูงสุด, 2=รองลงมา, ...) ตาม pattern เดียวกับที่เคยแก้ปัญหานี้
+    # ใน static/src/js/driver_dashboard.js มาแล้ว (known_risks.md ข้อ 16.6)
+    # 0 = "Below Minimum" (ต่ำกว่าทุก tier ที่ตั้งไว้)
+    tier_rank = fields.Integer(
+        string='Tier Rank', compute='_compute_tier', store=True,
+        help='ลำดับ Tier จากสูงสุด (1) ไปต่ำสุด — ใช้แสดงสีป้ายใน list/'
+             'kanban แทนการเทียบชื่อ Tier ตรงๆ เพราะ Admin ตั้งชื่อ Tier '
+             'เองได้ไม่จำกัด (0 = Below Minimum)')
+
     @api.depends('driver_score')
     def _compute_tier(self):
         """แก้บั๊ก 2026-08-03: เดิมถ้าไม่มี Scoring Config ที่ Active อยู่เลย
@@ -99,7 +112,10 @@ class TelematicsLog(models.Model):
 
         แก้ 2026-08-04: Tier เปลี่ยนเป็นไดนามิกแล้ว (tier_ids แทน 4 field
         ตายตัว A/B/C/D) — loop ผ่าน tier_ids เรียงจาก min_score มากไปน้อย
-        แทนเทียบทีละ field แบบเดิม"""
+        แทนเทียบทีละ field แบบเดิม
+
+        แก้ 2026-08-10: คำนวณ tier_rank คู่กันในลูปเดียวกัน (ไม่ query ซ้ำ)
+        — ใช้แสดงสีป้ายแบบไดนามิกใน view แทนเทียบชื่อ tier ตรงๆ"""
         Config = self.env['fleet.telematics.scoring.config']
         cfg = Config.search([('is_active', '=', True)], limit=1)
         tiers = cfg.tier_ids.sorted(key=lambda t: t.min_score, reverse=True) if cfg else \
@@ -109,24 +125,26 @@ class TelematicsLog(models.Model):
             score = rec.driver_score or 0.0
             if tiers:
                 matched = False
-                for t in tiers:
+                for idx, t in enumerate(tiers, start=1):
                     if score >= t.min_score:
                         rec.tier = t.name
+                        rec.tier_rank = idx
                         matched = True
                         break
                 if not matched:
                     rec.tier = 'Below Minimum'
+                    rec.tier_rank = 0
             else:
                 # ไม่มี Scoring Config Active หรือไม่มี tier ตั้งไว้เลย →
                 # fallback เป็น threshold มาตรฐาน (เหมือนพฤติกรรมเดิม)
                 if score >= 90.0:
-                    rec.tier = 'A'
+                    rec.tier, rec.tier_rank = 'A', 1
                 elif score >= 75.0:
-                    rec.tier = 'B'
+                    rec.tier, rec.tier_rank = 'B', 2
                 elif score >= 60.0:
-                    rec.tier = 'C'
+                    rec.tier, rec.tier_rank = 'C', 3
                 else:
-                    rec.tier = 'D'
+                    rec.tier, rec.tier_rank = 'D', 4
 
     gps_track_json   = fields.Text(string='GPS Track (JSON)',
         help='เก็บ GPS track ทั้งสาย เช่น [{"lat": 18.7883, "lon": 98.9853, "ts": "..."}]')

@@ -272,6 +272,60 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
         self.assertEqual(tier_a.min_score,    90.0)
         self.assertTrue(cfg.is_active)
 
+    # ── เพิ่มใหม่ 2026-08-10: FDD §12.3 Tier Table มี 5 คอลัมน์ (Tier /
+    # คะแนนขั้นต่ำ / เกรด / สี Badge / % โบนัส) แต่ตอนแก้เป็น Dynamic Tier
+    # (2026-08-04) ใส่มาแค่ 3 (name/min_score/bonus_pct) — เพิ่ม
+    # grade_label + badge_color ให้ครบตามเอกสาร ────────────────────────
+    def test_01b_default_tiers_have_grade_label_and_badge_color_per_fdd(self):
+        """Default tier A/B/C ต้องมี เกรด + สี Badge ตรงตามตัวอย่างใน FDD
+        §12.3 (A=ดีเยี่ยม/#28a745, B=ดี/#17a2b8, C=พอใช้/#ffc107)"""
+        cfg = self._make_scoring('UC02-01B')
+        tier_a = cfg.tier_ids.filtered(lambda t: t.name == 'A')
+        tier_b = cfg.tier_ids.filtered(lambda t: t.name == 'B')
+        tier_c = cfg.tier_ids.filtered(lambda t: t.name == 'C')
+        self.assertEqual(tier_a.grade_label, 'ดีเยี่ยม')
+        self.assertEqual(tier_a.badge_color, '#28a745')
+        self.assertEqual(tier_b.grade_label, 'ดี')
+        self.assertEqual(tier_b.badge_color, '#17a2b8')
+        self.assertEqual(tier_c.grade_label, 'พอใช้')
+        self.assertEqual(tier_c.badge_color, '#ffc107')
+
+    def test_01c_tier_badge_color_accepts_valid_hex(self):
+        """สี Badge รูปแบบ hex ถูกต้อง (#RGB หรือ #RRGGBB) ต้องบันทึกได้ปกติ"""
+        cfg = self._make_scoring('UC02-01C', active=False)
+        tier = cfg.tier_ids[0]
+        tier.write({'badge_color': '#abc'})
+        self.assertEqual(tier.badge_color, '#abc')
+        tier.write({'badge_color': '#1A2B3C'})
+        self.assertEqual(tier.badge_color, '#1A2B3C')
+
+    def test_01d_tier_badge_color_rejects_invalid_format(self):
+        """สี Badge ที่ไม่ใช่ hex ต้องโดน ValidationError กันพิมพ์ผิด"""
+        cfg = self._make_scoring('UC02-01D', active=False)
+        tier = cfg.tier_ids[0]
+        with self.assertRaises(ValidationError):
+            tier.write({'badge_color': 'red'})
+        with self.assertRaises(ValidationError):
+            tier.write({'badge_color': '28a745'})  # ขาด #
+
+    def test_01e_grade_label_optional_blank_allowed(self):
+        """เกรด ไม่ required — เว้นว่างได้ (บาง Tier อาจไม่ต้องการคำอธิบาย)"""
+        cfg = self._make_scoring('UC02-01E', active=False, tiers=[
+            {'name': 'X', 'min_score': 50.0, 'bonus_pct': 1.0},
+        ])
+        tier = cfg.tier_ids[0]
+        self.assertEqual(tier.grade_label, '')
+
+    def test_01f_build_config_payload_includes_grade_and_color(self):
+        """_build_config_payload() ต้องส่ง grade_label/badge_color ไปด้วย
+        (ตาม FDD §12.3 ที่บอกว่า Admin ปรับได้ทั้งคู่ — ไม่ใช่แค่เก็บใน
+        Odoo เฉยๆ แต่ต้อง sync ไป Backend ด้วยเหมือน field อื่น)"""
+        cfg = self._make_scoring('UC02-01F', active=False)
+        payload = cfg._build_config_payload()
+        tier_a_payload = next(t for t in payload['tiers'] if t['name'] == 'A')
+        self.assertEqual(tier_a_payload['grade_label'], 'ดีเยี่ยม')
+        self.assertEqual(tier_a_payload['badge_color'], '#28a745')
+
     def test_02_only_one_active_config_allowed(self):
         """Active ScoringConfig ได้เพียง 1 รายการ → รายการที่ 2 ต้อง raise"""
         self._make_scoring('UC02-02A', active=True)
@@ -486,7 +540,17 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
         cfg.action_approve()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        mock_resp.json.return_value = {'config': {'config_name': cfg.name}}
+        # Backend ที่รองรับ Dynamic Tier แล้ว ต้องตอบ tiers กลับมาครบ
+        # (3 แถว A/B/C ตาม default ของ _make_scoring) — ไม่งั้นจะโดน
+        # tier_warning (ดู test_20e/test_20f ด้านล่าง)
+        mock_resp.json.return_value = {'config': {
+            'config_name': cfg.name,
+            'tiers': [
+                {'name': 'A', 'min_score': 90.0, 'bonus_pct': 10.0},
+                {'name': 'B', 'min_score': 75.0, 'bonus_pct': 5.0},
+                {'name': 'C', 'min_score': 60.0, 'bonus_pct': 0.0},
+            ],
+        }}
         mock_resp.raise_for_status.return_value = None
         with patch('requests.post', return_value=mock_resp):
             cfg.action_push_to_backend()
@@ -502,13 +566,76 @@ class TestUC02ScoringConfig(FleetTelematicsBase):
         cfg.action_approve()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        mock_resp.json.return_value = {'config': {'config_name': cfg.name}}
+        mock_resp.json.return_value = {'config': {
+            'config_name': cfg.name,
+            'tiers': [
+                {'name': 'A', 'min_score': 90.0, 'bonus_pct': 10.0},
+                {'name': 'B', 'min_score': 75.0, 'bonus_pct': 5.0},
+                {'name': 'C', 'min_score': 60.0, 'bonus_pct': 0.0},
+            ],
+        }}
         mock_resp.raise_for_status.return_value = None
         with patch('requests.post', return_value=mock_resp) as mock_post:
             cfg.action_push_to_backend()
         _, kwargs = mock_post.call_args
         self.assertIn('APIKEY', kwargs.get('headers', {}))
         self.assertEqual(kwargs['headers']['APIKEY'], 'TEST-KEY')
+
+    # ── เพิ่มใหม่ 2026-08-10: ยืนยัน tiers ที่ส่งไปจริงกับ Backend ────────
+    # (แก้บั๊ก Silent Failure — Backend เก่าไม่มีที่เก็บ "tiers" เลย แต่
+    # HTTP 201 กลับมาปกติ ทำให้ Admin เห็น "สำเร็จ" ทั้งที่ tier หายไป)
+    def test_20e_push_warns_when_backend_omits_tiers_entirely(self):
+        """Backend รุ่นเก่า (ยังไม่รองรับ Dynamic Tier) ตอบกลับโดยไม่มี
+        key "tiers" เลย → ต้องได้ warning ไม่ใช่ success เฉยๆ"""
+        cfg = self._make_scoring('UC02-20E', active=False)
+        cfg.action_approve()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 201
+        mock_resp.json.return_value = {'config': {'config_name': cfg.name}}  # ไม่มี "tiers"
+        mock_resp.raise_for_status.return_value = None
+        with patch('requests.post', return_value=mock_resp):
+            result = cfg.action_push_to_backend()
+        self.assertEqual(result['params']['type'], 'warning')
+        self.assertIn('ไม่ส่ง', result['params']['message'])
+        self.assertIn('⚠️', cfg.last_push_status)
+
+    def test_20f_push_warns_when_backend_tier_count_mismatches(self):
+        """Backend ตอบ tiers กลับมา แต่จำนวนไม่ตรงกับที่ Odoo ส่งไป (เช่น
+        Backend รับแค่บางส่วน หรือ dedupe ผิด) → ต้องเตือน Admin"""
+        cfg = self._make_scoring('UC02-20F', active=False)  # ส่งไป 3 tier (A/B/C)
+        cfg.action_approve()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 201
+        mock_resp.json.return_value = {'config': {
+            'config_name': cfg.name,
+            'tiers': [{'name': 'A', 'min_score': 90.0, 'bonus_pct': 10.0}],  # แค่ 1
+        }}
+        mock_resp.raise_for_status.return_value = None
+        with patch('requests.post', return_value=mock_resp):
+            result = cfg.action_push_to_backend()
+        self.assertEqual(result['params']['type'], 'warning')
+        self.assertIn('3', result['params']['message'])  # sent 3
+        self.assertIn('1', result['params']['message'])  # backend confirmed 1
+
+    def test_20g_push_no_warning_when_tiers_match(self):
+        """กรณีปกติ (Backend แก้แล้ว) — จำนวน tiers ตรงกัน ต้องไม่มี warning"""
+        cfg = self._make_scoring('UC02-20G', active=False)
+        cfg.action_approve()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 201
+        mock_resp.json.return_value = {'config': {
+            'config_name': cfg.name,
+            'tiers': [
+                {'name': 'A', 'min_score': 90.0, 'bonus_pct': 10.0},
+                {'name': 'B', 'min_score': 75.0, 'bonus_pct': 5.0},
+                {'name': 'C', 'min_score': 60.0, 'bonus_pct': 0.0},
+            ],
+        }}
+        mock_resp.raise_for_status.return_value = None
+        with patch('requests.post', return_value=mock_resp):
+            result = cfg.action_push_to_backend()
+        self.assertEqual(result['params']['type'], 'success')
+        self.assertNotIn('⚠️', cfg.last_push_status)
 
     # ── เพิ่ม: ปิด Active ต้องเก็บข้อมูล/ผู้อนุมัติไว้ครบ ไม่ล้างทิ้ง
     # (popup ยืนยันอยู่ที่ระดับปุ่มในฟอร์ม ไม่ใช่ระดับโมเดล จึงทดสอบแค่ว่า
@@ -851,6 +978,63 @@ class TestUC04TripSync(FleetTelematicsBase):
             self.assertEqual(
                 trip.tier, expected_tier,
                 f"score={score} ควรได้ tier {expected_tier} แต่ได้ {trip.tier}")
+
+    # ── เพิ่มใหม่ 2026-08-10: tier_rank ใช้แทนชื่อ tier ใน view decoration/
+    # filter — ต้องได้ลำดับถูกต้องไม่ว่า Admin จะตั้งชื่อ Tier เป็นอะไร ──
+    def test_11d_tier_rank_computed_correctly_with_custom_tier_names(self):
+        """tier_rank ต้องนับลำดับจาก min_score มากไปน้อย (1=สูงสุด) โดย
+        ไม่ขึ้นกับชื่อ Tier เลย — ทดสอบด้วยชื่อที่ไม่ใช่ A/B/C/D"""
+        Config = self.env['fleet.telematics.scoring.config']
+        Config.search([('is_active', '=', True)]).write({'is_active': False})
+        Config.create({
+            'name': 'TIER-RANK-CUSTOM-NAME-TEST',
+            'is_active': True,
+            'effective_date': '2025-01-01',
+            'score_base': 100.0, 'max_deduct_per_trip': 50.0,
+            'tier_ids': [
+                (0, 0, {'name': 'Gold',   'min_score': 90.0, 'bonus_pct': 15.0}),
+                (0, 0, {'name': 'Silver', 'min_score': 75.0, 'bonus_pct': 8.0}),
+                (0, 0, {'name': 'Bronze', 'min_score': 60.0, 'bonus_pct': 2.0}),
+            ],
+        })
+
+        Log = self.env['fleet.telematics.log']
+        cases = [
+            (95.0, 'Gold',   1),
+            (80.0, 'Silver', 2),
+            (65.0, 'Bronze', 3),
+            (30.0, 'Below Minimum', 0),
+        ]
+        for score, expected_tier, expected_rank in cases:
+            trip = Log.create({
+                'vehicle_id':  self.v1.id,
+                'trip_start':  '2026-01-01 08:00:00',
+                'external_trip_id': f'TIER-RANK-TEST-{expected_rank}',
+                'driver_score': score,
+            })
+            self.assertEqual(trip.tier, expected_tier)
+            self.assertEqual(
+                trip.tier_rank, expected_rank,
+                f"score={score} ({expected_tier}) ควรได้ tier_rank="
+                f"{expected_rank} แต่ได้ {trip.tier_rank}")
+
+    def test_11e_tier_rank_fallback_matches_abcd_when_no_config_active(self):
+        """ไม่มี config active — fallback threshold เดิมต้องได้ tier_rank
+        ตรงกับตำแหน่ง A=1/B=2/C=3/D=4 (ให้ filter/badge เดิมยังใช้ได้)"""
+        self.env['fleet.telematics.scoring.config'].search(
+            [('is_active', '=', True)]).write({'is_active': False})
+
+        Log = self.env['fleet.telematics.log']
+        cases = [(95.0, 'A', 1), (80.0, 'B', 2), (65.0, 'C', 3), (30.0, 'D', 4)]
+        for score, expected_tier, expected_rank in cases:
+            trip = Log.create({
+                'vehicle_id':  self.v1.id,
+                'trip_start':  '2026-01-01 08:00:00',
+                'external_trip_id': f'TIER-RANK-FALLBACK-{expected_tier}',
+                'driver_score': score,
+            })
+            self.assertEqual(trip.tier, expected_tier)
+            self.assertEqual(trip.tier_rank, expected_rank)
 
     # ── แก้บั๊ก 2026-08-03: ไม่มี Scoring Config Active เลยในระบบ ไม่ควร
     # บังคับทุกทริปได้ Tier D — เจอจากหน้า Trip Logs จริงที่ทุกแถวขึ้น

@@ -137,18 +137,21 @@
                                                 Tier ผลงาน
                                             </td>
                                             <td>
-                                                <!-- แก้ 2026-08-04: Tier เปลี่ยนเป็นไดนามิกแล้ว (Admin ตั้งชื่อ
-                                                     Tier เองได้ ไม่ใช่แค่ A/B/C/D) — สีป้ายนี้ยัง hardcode ไว้
-                                                     3 สีสำหรับชื่อ A/B/C เท่านั้น ถ้า Admin ตั้งชื่อ Tier อื่น
-                                                     จะได้สีแดง (fallback) เสมอ เป็นข้อจำกัดเชิง cosmetic เท่านั้น
-                                                     ไม่กระทบความถูกต้องของตัวเลข ยังไม่ได้ทำให้ไดนามิกเต็มรูปแบบ -->
+                                                <!-- แก้ 2026-08-10: เปลี่ยนจาก hardcode 3 สี (A/B/C) มาอ่าน
+                                                     badge_color จริงจาก tier_ids ของ scoring_config_id ที่ใช้
+                                                     คำนวณรอบนี้ (snapshot) แล้ว — Admin ตั้งชื่อ/สี Tier เอง
+                                                     ได้อิสระตาม FDD §12.3 "สี Badge (ปรับได้)" ถ้าหา tier ที่
+                                                     ชื่อตรงกันไม่เจอ (เช่น config เก่าไม่มี tier_ids, หรือ
+                                                     "Below Minimum") fallback เป็นสีเทากลาง ไม่ใช่สีแดงเหมือนเดิม
+                                                     ซึ่งเคยสื่อความหมายผิดว่าเป็นสถานะแย่เสมอ -->
+                                                <t t-set="tier_rec"
+                                                   t-value="doc.scoring_config_id.tier_ids.filtered(lambda t: t.name == doc.incentive_tier)[:1]"/>
                                                 <span class="badge fs-6"
-                                                      t-attf-style="background:#{
-                                                          'A' == doc.incentive_tier and '#15803D' or
-                                                          'B' == doc.incentive_tier and '#1d4ed8' or
-                                                          'C' == doc.incentive_tier and '#d97706' or
-                                                          '#b91c1c'}">
+                                                      t-attf-style="background:#{tier_rec.badge_color or '#6c757d'}">
                                                     <t t-esc="doc.incentive_tier"/>
+                                                </span>
+                                                <span t-if="tier_rec.grade_label" class="text-muted ms-1">
+                                                    (<t t-esc="tier_rec.grade_label"/>)
                                                 </span>
                                             </td>
                                         </tr>
