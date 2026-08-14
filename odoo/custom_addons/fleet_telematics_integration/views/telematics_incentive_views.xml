@@ -190,7 +190,7 @@
         <field name="name">Incentive Summary</field>
         <field name="res_model">fleet.telematics.incentive</field>
         <field name="view_mode">list,pivot,graph</field>
-        <field name="context">{'group_by': 'state'}</field>
+        <field name="context">{'group_by': 'state', 'create': False}</field>
     </record>
 
 </odoo>
