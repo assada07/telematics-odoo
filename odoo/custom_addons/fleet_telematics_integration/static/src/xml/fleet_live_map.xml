@@ -34,11 +34,11 @@
                 <div class="d-flex align-items-center gap-3">
                     <!-- Legend -->
                     <span class="small text-muted d-flex align-items-center gap-1">
-                        <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#22c55e;border:1px solid #ccc"/>
-                        Ignition ON
+                        <span style="display:inline-block;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:10px solid #22c55e;"/>
+                        Ignition ON (ลูกศรชี้ทิศการวิ่ง)
                     </span>
                     <span class="small text-muted d-flex align-items-center gap-1">
-                        <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#ef4444;border:1px solid #ccc"/>
+                        <span style="display:inline-block;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:10px solid #ef4444;"/>
                         Ignition OFF
                     </span>
                     <span t-if="state.lastUpdate" class="small text-muted">

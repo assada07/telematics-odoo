@@ -70,6 +70,13 @@ export class FleetLiveMap extends Component {
         this.pollTimer    = null;
         this._fittedOnce  = false;
 
+        // ── ทิศทางรถ (heading) ──────────────────────────────────────────────
+        // Backend ไม่ได้ส่ง field ทิศทางมาให้ (มีแค่ lat/lon/speed/ignition)
+        // จึงต้องคำนวณ bearing เองจากตำแหน่งเก่า→ใหม่ของรถแต่ละคัน
+        this._lastPos  = {};  // key(vehicle_id) -> {lat, lon}
+        this._heading  = {};  // key(vehicle_id) -> องศาล่าสุดที่ใช้แสดง (0-360)
+        this._MIN_MOVE_M = 3; // ขยับน้อยกว่านี้ (เมตร) ถือว่าจอดนิ่ง ไม่อัปเดตทิศ (กัน GPS jitter)
+
         onMounted(async () => {
             try {
                 const L = await loadLeaflet();
@@ -198,6 +205,51 @@ export class FleetLiveMap extends Component {
         return v ? v.driver_name : null;
     }
 
+    // ── คำนวณทิศ (bearing) จากจุดเก่า → จุดใหม่ หน่วยองศา 0-360 (0=เหนือ) ──────
+    _computeBearing(lat1, lon1, lat2, lon2) {
+        const toRad = (d) => (d * Math.PI) / 180;
+        const φ1 = toRad(lat1), φ2 = toRad(lat2);
+        const Δλ = toRad(lon2 - lon1);
+        const y = Math.sin(Δλ) * Math.cos(φ2);
+        const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+        const θ = Math.atan2(y, x);
+        return (θ * 180 / Math.PI + 360) % 360;
+    }
+
+    // ── ระยะทางระหว่าง 2 จุด (เมตร) — สูตร Haversine ────────────────────────
+    _distanceMeters(lat1, lon1, lat2, lon2) {
+        const R = 6371000;
+        const toRad = (d) => (d * Math.PI) / 180;
+        const dφ = toRad(lat2 - lat1);
+        const dλ = toRad(lon2 - lon1);
+        const a = Math.sin(dφ / 2) ** 2 +
+            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dλ / 2) ** 2;
+        return 2 * R * Math.asin(Math.sqrt(a));
+    }
+
+    // ── หาทิศทางที่จะใช้แสดงสำหรับรถคันหนึ่ง ──────────────────────────────────
+    _resolveHeading(key, v) {
+        // 1) ถ้า Backend ส่ง heading/course/bearing มาเองในอนาคต ใช้ค่านั้นเลย
+        const fromApi = v.heading ?? v.course ?? v.bearing;
+        if (fromApi !== undefined && fromApi !== null && !isNaN(fromApi)) {
+            this._heading[key] = Number(fromApi);
+            this._lastPos[key] = { lat: v.lat, lon: v.lon };
+            return this._heading[key];
+        }
+
+        // 2) ไม่มี ต้องคำนวณเองจากตำแหน่งเก่า→ใหม่
+        const prev = this._lastPos[key];
+        if (prev) {
+            const moved = this._distanceMeters(prev.lat, prev.lon, v.lat, v.lon);
+            if (moved >= this._MIN_MOVE_M) {
+                this._heading[key] = this._computeBearing(prev.lat, prev.lon, v.lat, v.lon);
+            }
+            // ขยับน้อยกว่า threshold (จอดนิ่ง/GPS jitter) → คงทิศเดิมไว้
+        }
+        this._lastPos[key] = { lat: v.lat, lon: v.lon };
+        return this._heading[key] ?? 0; // ยังไม่เคยรู้ทิศ → ชี้เหนือไว้ก่อน
+    }
+
     // ── วางหมุดบนแผนที่ ───────────────────────────────────────────────────────
     _updateMarkers() {
         if (!this.map || !window.L) return;
@@ -208,24 +260,35 @@ export class FleetLiveMap extends Component {
             if (!activeKeys.has(key)) {
                 this.markers[key].remove();
                 delete this.markers[key];
+                delete this._lastPos[key];
+                delete this._heading[key];
             }
         }
 
         for (const v of this.state.vehicles) {
             if (!v.lat || !v.lon) continue;
 
-            const key   = String(v.vehicle_id);
-            const color = v.ignition ? "#22c55e" : "#ef4444";
+            const key     = String(v.vehicle_id);
+            const color   = v.ignition ? "#22c55e" : "#ef4444";
+            const heading = this._resolveHeading(key, v);
 
+            // ลูกศร (สามเหลี่ยม) หมุนตามทิศ — 0deg = ชี้เหนือ, หมุนตามเข็มนาฬิกา
             const icon = window.L.divIcon({
                 className: "",
-                iconSize:  [18, 18],
-                iconAnchor:[9, 9],
+                iconSize:  [24, 24],
+                iconAnchor:[12, 12],
                 html: `<div style="
-                    background:${color};width:14px;height:14px;
-                    border-radius:50%;border:2px solid white;
-                    box-shadow:0 1px 4px rgba(0,0,0,0.4);margin:2px;
-                "></div>`,
+                    width:24px;height:24px;
+                    transform:rotate(${heading}deg);
+                    transform-origin:12px 12px;
+                ">
+                    <svg width="24" height="24" viewBox="0 0 24 24">
+                        <path d="M12 2 L20 21 L12 16.5 L4 21 Z"
+                              fill="${color}" stroke="white" stroke-width="1.5"
+                              stroke-linejoin="round"
+                              style="filter:drop-shadow(0 1px 2px rgba(0,0,0,0.4))"/>
+                    </svg>
+                </div>`,
             });
 
             const ts      = v.ts ? new Date(v.ts).toLocaleString("th-TH") : "-";
@@ -236,6 +299,7 @@ export class FleetLiveMap extends Component {
                     <span style="color:#666">คนขับ:</span> ${v.driver_name || "-"}<br/>
                     <span style="color:#666">Device:</span> ${v.device_id || "-"}<br/>
                     <span style="color:#666">ความเร็ว:</span> ${v.speed ?? "-"} km/h<br/>
+                    <span style="color:#666">ทิศทาง:</span> ${Math.round(heading)}°<br/>
                     <span style="color:#666">Ignition:</span> ${ignText}<br/>
                     <span style="color:#999;font-size:11px">อัปเดต: ${ts}</span>
                 </div>`;
